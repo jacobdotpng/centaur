@@ -14,7 +14,6 @@ jobs:
   console-checks:
     uses: ./.github/workflows/console-ci.yml
   build:
-    needs: [checks, console-checks]
     if: github.ref == 'refs/heads/production'
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -80,7 +79,7 @@ jobs:
           path: release/*.json
           retention-days: 7
   release:
-    needs: build
+    needs: [build, checks, console-checks]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

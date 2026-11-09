@@ -1203,7 +1203,7 @@ describe('slackbotv2', () => {
         .filter(call => call.method === 'chat.stopStream')
         .flatMap(call => (Array.isArray(call.body.blocks) ? (call.body.blocks as unknown[]) : []))
         .map(block => JSON.stringify(block))
-        .filter(text => text.includes('Sol 5.6'))
+        .filter(text => text.includes('Sol 6.1'))
 
     const parent = await postUserMessage('Response metadata thread context.')
     const firstMention = await sendMessage(`<@${BOT_USER_ID}> start`, { threadTs: parent.ts })
@@ -1211,7 +1211,7 @@ describe('slackbotv2', () => {
     await firstMention.finished()
     expect(metadataBlockTexts(slackApi.calls)).toHaveLength(1)
     expect(metadataBlockTexts(slackApi.calls)[0]).toContain('Codex')
-    expect(metadataBlockTexts(slackApi.calls)[0]).toContain('Medium')
+    expect(metadataBlockTexts(slackApi.calls)[0]).toContain('Low')
     expect(metadataBlockTexts(slackApi.calls)[0]).not.toContain('Fast')
 
     slackApi.reset()
@@ -1234,7 +1234,7 @@ describe('slackbotv2', () => {
         .filter(call => call.method === 'chat.stopStream')
         .flatMap(call => (Array.isArray(call.body.blocks) ? (call.body.blocks as unknown[]) : []))
         .map(block => JSON.stringify(block))
-        .filter(text => text.includes('Sol 5.6'))
+        .filter(text => text.includes('Sol 6.1'))
 
     const parent = await postUserMessage('Service tier thread context.')
     const firstMention = await sendMessage(`<@${BOT_USER_ID}> start`, { threadTs: parent.ts })

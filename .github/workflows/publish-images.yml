@@ -1,291 +1,111 @@
-name: Publish Images
-
+name: Publish production images
 on:
   push:
-    branches: [main]
-    tags: [v*]
-    paths:
-      - .github/workflows/publish-images.yml
-      - .github/workflows/e2e.yml
-      - services/**
-      - crates/**
-      - contrib/chart/charts/agent-sandbox/crds/**
-      - harness/**
-      - centaur_sdk/**
-      - packages/**
-      - tools/**
-      - workflows/**
-      - scripts/bootstrap-k8s-secrets.sh
-      - package.json
-      - pnpm-lock.yaml
-      - pnpm-workspace.yaml
-      - .agents/skills/**
-  pull_request:
+    branches: [production]
   workflow_dispatch:
-
-concurrency:
-  group: publish-images-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
-
 permissions:
   contents: read
-  id-token: write
-  packages: write
-
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAMESPACE: paradigmxyz/centaur
-  IMAGE_SOURCE: https://github.com/paradigmxyz/centaur
-  # Main/tags keep optimized release images. PRs and manual branch publishes
-  # use debug builds so staging/dev iteration does not spend minutes optimizing
-  # Rust binaries that are immediately replaced by the next test build.
-  RUST_BUILD_PROFILE: ${{ (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') && 'debug' || 'release' }}
-
+concurrency:
+  group: production-images
+  cancel-in-progress: false
 jobs:
-  # Build each image with Depot's hosted builders, push by digest, and hand
-  # the digests to the merge job below which assembles the multi-arch manifest.
-  # arm64 is only built on pushes to main and release tags — PR and manual
-  # dispatch builds stay amd64-only to keep iteration fast. Fork PRs skip both
-  # jobs so untrusted changes do not run on the hosted image builders.
+  checks:
+    uses: ./.github/workflows/ci.yml
+  console-checks:
+    uses: ./.github/workflows/console-ci.yml
   build:
-    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork }}
-    runs-on: ${{ matrix.platform == 'linux/arm64' && 'depot-ubuntu-24.04-arm-16' || 'depot-ubuntu-24.04-16' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        service: [api-rs, company-context, proxy-sync, token-broker, slackbotv2, linearbot, discordbot, githubbot, teamsbot, agent, iron-proxy, console]
-        platform: ${{ github.event_name == 'push' && fromJSON('["linux/amd64", "linux/arm64"]') || fromJSON('["linux/amd64"]') }}
-        include:
-          - service: api-rs
-            image: centaur-api-rs
-            context: .
-            dockerfile: services/api-rs/Dockerfile
-            target: ""
-          - service: company-context
-            image: centaur-company-context
-            context: .
-            dockerfile: services/company-context/Dockerfile
-            target: ""
-          - service: proxy-sync
-            image: centaur-proxy-sync
-            context: .
-            dockerfile: services/proxy-sync/Dockerfile
-            target: ""
-          - service: token-broker
-            image: centaur-token-broker
-            context: .
-            dockerfile: services/token-broker/Dockerfile
-            target: ""
-          - service: slackbotv2
-            image: centaur-slackbotv2
-            context: .
-            dockerfile: services/slackbotv2/Dockerfile
-            target: ""
-          - service: linearbot
-            image: centaur-linearbot
-            context: .
-            dockerfile: services/linearbot/Dockerfile
-            target: ""
-          - service: discordbot
-            image: centaur-discordbot
-            context: .
-            dockerfile: services/discordbot/Dockerfile
-            target: ""
-          - service: githubbot
-            image: centaur-githubbot
-            context: .
-            dockerfile: services/githubbot/Dockerfile
-            target: ""
-          - service: teamsbot
-            image: centaur-teamsbot
-            context: .
-            dockerfile: services/teamsbot/Dockerfile
-            target: ""
-          - service: agent
-            image: centaur-agent
-            context: .
-            dockerfile: services/sandbox/Dockerfile
-            target: sandbox
-          - service: iron-proxy
-            image: centaur-iron-proxy
-            context: .
-            dockerfile: services/iron-proxy/Dockerfile
-            target: ""
-          - service: console
-            image: centaur-console
-            context: services/console
-            dockerfile: services/console/Dockerfile
-            target: ""
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Derive platform slug
-        run: |
-          platform="${{ matrix.platform }}"
-          echo "PLATFORM_SLUG=${platform//\//-}" >> "$GITHUB_ENV"
-
-      - name: Set up Depot
-        uses: depot/setup-action@91bc8495a33ebfc504ffc89e5674379ccf23c29c # v1.7.2
-
-      - name: Log in to GHCR
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Docker metadata for ${{ matrix.image }}
-        id: meta
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.image }}
-          labels: |
-            org.opencontainers.image.title=${{ matrix.image }}
-            org.opencontainers.image.source=${{ env.IMAGE_SOURCE }}
-        env:
-          DOCKER_METADATA_PR_HEAD_SHA: true
-
-      - name: Build and push ${{ matrix.image }} (${{ matrix.platform }})
-        id: build
-        uses: depot/build-push-action@98e78adca7817480b8185f474a400b451d74e287 # v1.18.0
-        with:
-          project: d8qqlh1bmq
-          context: ${{ matrix.context }}
-          file: ${{ matrix.dockerfile }}
-          target: ${{ matrix.target }}
-          platforms: ${{ matrix.platform }}
-          labels: ${{ steps.meta.outputs.labels }}
-          # Tags are applied by the merge job on the multi-arch manifest;
-          # per-arch builds are pushed by digest only. The fork check is also
-          # enforced at the job level so external PRs do not build.
-          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.image }},push-by-digest=true,name-canonical=true,push=${{ !github.event.pull_request.head.repo.fork }}
-          build-args: |
-            RUST_BUILD_PROFILE=${{ env.RUST_BUILD_PROFILE }}
-
-      - name: Export digest
-        if: ${{ !github.event.pull_request.head.repo.fork }}
-        run: |
-          mkdir -p ${{ runner.temp }}/digests
-          digest="${{ steps.build.outputs.digest }}"
-          touch "${{ runner.temp }}/digests/${digest#sha256:}"
-
-      - name: Upload digest
-        if: ${{ !github.event.pull_request.head.repo.fork }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: digests-${{ matrix.image }}-${{ env.PLATFORM_SLUG }}
-          path: ${{ runner.temp }}/digests/*
-          if-no-files-found: error
-          retention-days: 1
-
-  merge:
-    runs-on: depot-ubuntu-24.04
-    needs: build
-    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - image: centaur-api-rs
-          - image: centaur-company-context
-          - image: centaur-proxy-sync
-          - image: centaur-token-broker
-          - image: centaur-slackbotv2
-          - image: centaur-linearbot
-          - image: centaur-agent
-          - image: centaur-iron-proxy
-          - image: centaur-console
-          - image: centaur-discordbot
-          - image: centaur-githubbot
-          - image: centaur-teamsbot
-
-    steps:
-      - name: Download digests
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          pattern: digests-${{ matrix.image }}-*
-          path: ${{ runner.temp }}/digests
-          merge-multiple: true
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-
-      - name: Log in to GHCR
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Docker metadata for ${{ matrix.image }}
-        id: meta
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.image }}
-          flavor: |
-            latest=false
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=raw,value=main,enable={{is_default_branch}}
-            type=raw,value=edge,enable={{is_default_branch}}
-            type=sha,prefix=main-sha-,enable={{is_default_branch}}
-            type=semver,pattern={{raw}}
-            type=ref,event=pr
-            type=sha
-          labels: |
-            org.opencontainers.image.title=${{ matrix.image }}
-            org.opencontainers.image.source=${{ env.IMAGE_SOURCE }}
-        env:
-          DOCKER_METADATA_PR_HEAD_SHA: true
-
-      - name: Create multi-arch manifest for ${{ matrix.image }}
-        working-directory: ${{ runner.temp }}/digests
-        run: |
-          docker buildx imagetools create \
-            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.image }}@sha256:%s ' *)
-
-      - name: Inspect manifest
-        run: |
-          docker buildx imagetools inspect ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.image }}:${{ steps.meta.outputs.version }}
-
-  # Runs the e2e scenarios against the images just published.
-  e2e:
-    needs: merge
-    if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
+    if: github.ref == 'refs/heads/production'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
     permissions:
       contents: read
-    uses: ./.github/workflows/e2e.yml
-
-  notify-centaur-paradigm:
-    name: Notify Paradigm Overlay
-    needs: merge
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: depot-ubuntu-24.04
-    environment: centaur-paradigm-dispatch
-    permissions: {}
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {service: api-rs, context: '.', file: services/api-rs/Dockerfile, target: ''}
+          - {service: proxy-sync, context: '.', file: services/proxy-sync/Dockerfile, target: ''}
+          - {service: token-broker, context: '.', file: services/token-broker/Dockerfile, target: ''}
+          - {service: slackbotv2, context: '.', file: services/slackbotv2/Dockerfile, target: ''}
+          - {service: agent, context: '.', file: services/sandbox/Dockerfile, target: sandbox}
+          - {service: iron-proxy, context: '.', file: services/iron-proxy/Dockerfile, target: ''}
+          - {service: console, context: services/console, file: services/console/Dockerfile, target: ''}
     steps:
-      - name: Dispatch sandbox update
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ secrets.CENTAUR_PARADIGM_DISPATCH_TOKEN }}
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Reclaim runner disk for the sandbox toolchain
         run: |
-          if [ -z "$GH_TOKEN" ]; then
-            echo "CENTAUR_PARADIGM_DISPATCH_TOKEN is required." >&2
-            exit 1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and publish exact revision
+        id: image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          target: ${{ matrix.target }}
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/${{ github.repository }}/centaur-${{ matrix.service }}:sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+      - name: Record immutable image digest
+        env:
+          SERVICE: ${{ matrix.service }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          mkdir -p release
+          python3 - <<'PYCODE'
+          import json, os
+          from pathlib import Path
+          service = os.environ['SERVICE']
+          image = 'ghcr.io/' + os.environ['GITHUB_REPOSITORY'] + '/centaur-' + service + '@' + os.environ['DIGEST']
+          Path('release/' + service + '.json').write_text(json.dumps({service: image}))
+          PYCODE
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: image-${{ matrix.service }}
+          path: release/*.json
+          retention-days: 7
+  release:
+    needs: [build, checks, console-checks]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          pattern: image-*
+          path: release
+          merge-multiple: true
+      - name: Publish complete release manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 - <<'PYCODE'
+          import json, os
+          from pathlib import Path
+          images = {}
+          for path in Path('release').glob('*.json'):
+              images.update(json.loads(path.read_text()))
+          expected = {'agent','api-rs','console','iron-proxy','proxy-sync','slackbotv2','token-broker'}
+          assert set(images) == expected, 'Incomplete image set'
+          Path('release.json').write_text(json.dumps({'schema':1,'repository':os.environ['GITHUB_REPOSITORY'],'commit':os.environ['GITHUB_SHA'],'images':images}, indent=2) + '\n')
+          PYCODE
+          tag="centaur-${GITHUB_SHA}"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo 'This revision already has a release; preserving its original digests.'
+          else
+            gh release create "$tag" release.json --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Centaur ${GITHUB_SHA:0:12}" --notes 'Images built from the exact production revision. Deployment selects immutable digests.'
           fi
-
-          jq -n \
-            --arg sha "$GITHUB_SHA" \
-            '{
-              event_type: "centaur-sandbox-published",
-              client_payload: {sha: $sha}
-            }' |
-            gh api \
-              --method POST \
-              repos/paradigmxyz/centaur-paradigm/dispatches \
-              --input -

@@ -2,10 +2,9 @@ name: CI
 
 on:
   pull_request:
-    branches: [main]
+    branches: [production]
   merge_group:
-  push:
-    branches: [main]
+  workflow_call:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -17,7 +16,7 @@ permissions:
 jobs:
   ci_changes:
     name: Detect CI changes
-    runs-on: depot-ubuntu-24.04
+    runs-on: ubuntu-24.04
     outputs:
       migration_order: ${{ steps.filter.outputs.migration_order }}
       rust_checks: ${{ steps.filter.outputs.rust_checks }}
@@ -167,7 +166,7 @@ jobs:
 
   migration-order:
     name: Migration order
-    runs-on: depot-ubuntu-24.04
+    runs-on: ubuntu-24.04
     needs: ci_changes
     if: needs.ci_changes.outputs.migration_order == 'true'
     steps:
@@ -181,7 +180,7 @@ jobs:
 
   rust-checks:
     name: Rust fmt and clippy
-    runs-on: depot-ubuntu-24.04-16
+    runs-on: ubuntu-24.04
     needs: ci_changes
     if: needs.ci_changes.outputs.rust_checks == 'true'
     steps:
@@ -196,7 +195,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/production' }}
 
       - name: Format
         run: cargo fmt --all --check
@@ -206,7 +205,7 @@ jobs:
 
   harness-server-checks:
     name: Harness server tests
-    runs-on: depot-ubuntu-24.04-16
+    runs-on: ubuntu-24.04
     needs: ci_changes
     if: needs.ci_changes.outputs.harness_server_checks == 'true'
     steps:
@@ -220,14 +219,14 @@ jobs:
 
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/production' }}
 
       - name: Test
         run: cargo test --locked -p harness-server
 
   harness-server-conformance:
     name: Harness server Codex protocol conformance
-    runs-on: depot-ubuntu-24.04-16
+    runs-on: ubuntu-24.04
     needs: ci_changes
     if: needs.ci_changes.outputs.harness_server_checks == 'true'
     steps:
@@ -243,7 +242,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: crates/harness-server-conformance
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/production' }}
 
       - name: Format
         working-directory: crates/harness-server-conformance
@@ -259,7 +258,7 @@ jobs:
 
   company-context-checks:
     name: Company context tests
-    runs-on: depot-ubuntu-24.04-16
+    runs-on: ubuntu-24.04
     needs: ci_changes
     if: needs.ci_changes.outputs.company_context_checks == 'true'
     steps:
@@ -283,7 +282,7 @@ jobs:
 
   proxy-sync-checks:
     name: Proxy sync tests
-    runs-on: depot-ubuntu-24.04-16
+    runs-on: ubuntu-24.04
     needs: ci_changes
     if: needs.ci_changes.outputs.proxy_sync_checks == 'true'
     steps:
@@ -297,7 +296,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/production' }}
 
       - name: Test Active Record encryption crate
         run: cargo test --locked -p active-record-encryption
@@ -330,11 +329,13 @@ jobs:
       - name: Test
         env:
           PROXY_SYNC_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/proxy_sync_test
+          # Existing fixture names XOR timestamps with a counter; parallel fixtures can collide.
+          RUST_TEST_THREADS: 1
         run: cargo test --locked -p centaur-proxy-sync
 
   token-broker-checks:
     name: Token broker tests
-    runs-on: depot-ubuntu-24.04-16
+    runs-on: ubuntu-24.04
     needs: ci_changes
     if: needs.ci_changes.outputs.token_broker_checks == 'true'
     steps:
@@ -348,7 +349,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/production' }}
 
       - name: Start test database
         run: .github/scripts/start-test-postgres.sh token-broker-test-postgres 5432 token_broker_test pgvector
@@ -390,7 +391,7 @@ jobs:
 
   rust-api:
     name: Rust API tests
-    runs-on: depot-ubuntu-24.04-16
+    runs-on: ubuntu-24.04
     needs: ci_changes
     if: needs.ci_changes.outputs.rust_api == 'true'
     steps:
@@ -407,7 +408,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/production' }}
 
       - name: Test Absurd SDK
         env:
@@ -443,7 +444,7 @@ jobs:
 
   rust-api-postgres:
     name: Rust API migrations on PostgreSQL
-    runs-on: depot-ubuntu-24.04-16
+    runs-on: ubuntu-24.04
     needs: ci_changes
     if: needs.ci_changes.outputs.rust_api == 'true'
     steps:
@@ -460,7 +461,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/production' }}
 
       # Core migrations and the postgres text-search backend must not need
       # ParadeDB. The rust-api job covers both backends on ParadeDB.
@@ -475,7 +476,7 @@ jobs:
 
   sandbox-tests:
     name: Sandbox Python tests
-    runs-on: depot-ubuntu-24.04-4
+    runs-on: ubuntu-24.04
     needs: ci_changes
     if: needs.ci_changes.outputs.sandbox_tests == 'true'
     steps:
@@ -501,7 +502,7 @@ jobs:
 
   workflow-python-tests:
     name: Workflow Python tests
-    runs-on: depot-ubuntu-24.04-4
+    runs-on: ubuntu-24.04
     needs: ci_changes
     if: needs.ci_changes.outputs.workflow_python_tests == 'true'
     steps:
@@ -533,7 +534,7 @@ jobs:
 
   tool-tests:
     name: Tool tests
-    runs-on: depot-ubuntu-24.04-4
+    runs-on: ubuntu-24.04
     needs: ci_changes
     if: needs.ci_changes.outputs.tool_tests == 'true'
     steps:
@@ -561,7 +562,7 @@ jobs:
 
   slackbotv2-tests:
     name: Slackbot v2 tests
-    runs-on: depot-ubuntu-24.04-16
+    runs-on: ubuntu-24.04
     needs: ci_changes
     if: needs.ci_changes.outputs.slackbotv2_tests == 'true'
     steps:
@@ -589,7 +590,7 @@ jobs:
 
   linearbot-tests:
     name: Linearbot typecheck and tests
-    runs-on: depot-ubuntu-24.04-16
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -619,7 +620,7 @@ jobs:
 
   discordbot-checks:
     name: Discordbot typecheck and tests
-    runs-on: depot-ubuntu-24.04-16
+    runs-on: ubuntu-24.04
     needs: ci_changes
     if: needs.ci_changes.outputs.discordbot_checks == 'true'
     steps:
@@ -653,7 +654,7 @@ jobs:
 
   githubbot-checks:
     name: Githubbot typecheck and tests
-    runs-on: depot-ubuntu-24.04-16
+    runs-on: ubuntu-24.04
     needs: ci_changes
     if: needs.ci_changes.outputs.githubbot_checks == 'true'
     steps:
@@ -687,7 +688,7 @@ jobs:
 
   teamsbot-checks:
     name: Teamsbot typecheck and tests
-    runs-on: depot-ubuntu-24.04-16
+    runs-on: ubuntu-24.04
     needs: ci_changes
     if: needs.ci_changes.outputs.teamsbot_checks == 'true'
     steps:
@@ -719,7 +720,7 @@ jobs:
 
   ci-success:
     name: CI success
-    runs-on: depot-ubuntu-24.04
+    runs-on: ubuntu-24.04
     if: always()
     needs:
       - ci_changes

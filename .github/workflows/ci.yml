@@ -4,8 +4,7 @@ on:
   pull_request:
     branches: [production]
   merge_group:
-  push:
-    branches: [production]
+  workflow_call:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}

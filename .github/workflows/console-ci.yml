@@ -34,8 +34,8 @@ jobs:
           elif [[ "${{ github.event_name }}" == "push" ]]; then
             changed_files="$(git diff --name-only "${{ github.event.before }}...HEAD")"
           else
-            git fetch --no-tags --depth=1 origin main
-            changed_files="$(git diff --name-only origin/main...HEAD)"
+            # Manual runs have no before revision; validate all tracked paths.
+            changed_files="$(git ls-files)"
           fi
 
           if printf '%s\n' "${changed_files}" | grep -Eq '^(services/console/|crates/centaur-token-broker/providers\.json$|\.github/workflows/console-ci\.yml$)'; then

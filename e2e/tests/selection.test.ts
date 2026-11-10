@@ -57,7 +57,7 @@ type Scenario = {
 
 const scenarios: Record<string, Scenario> = {
   'no flag runs the deployment default': {
-    steps: [{ say: 'hello', harness: 'codex', model: CODEX_MODEL, effort: CODEX_EFFORT, footer: 'Sol 5.6 · Codex · Medium' }]
+    steps: [{ say: 'hello', harness: 'codex', model: CODEX_MODEL, effort: CODEX_EFFORT, footer: 'Sol 6.1 · Codex · Low' }]
   },
   'a harness flag sticks to the thread': {
     steps: [
@@ -74,7 +74,7 @@ const scenarios: Record<string, Scenario> = {
   },
   'a model flag sticks to the thread': {
     steps: [
-      { say: '--codex --model gpt-6.1-terra hello', harness: 'codex', model: 'gpt-6.1-terra', effort: CODEX_EFFORT, footer: 'Terra 6.1 · Codex · Medium' },
+      { say: '--codex --model gpt-6.1-terra hello', harness: 'codex', model: 'gpt-6.1-terra', effort: CODEX_EFFORT, footer: 'Terra 6.1 · Codex · Low' },
       { say: 'again', harness: 'codex', model: 'gpt-6.1-terra', effort: CODEX_EFFORT, sandbox: 'same' }
     ]
   },

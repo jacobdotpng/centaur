@@ -48,9 +48,8 @@ jobs:
             base="${{ github.event.before }}"
             changed_files="$(git diff --name-only "${base}...HEAD")"
           else
-            git fetch --no-tags --depth=1 origin main
-            base="origin/main"
-            changed_files="$(git diff --name-only "${base}...HEAD")"
+            # Manual runs have no before revision; validate all tracked paths.
+            changed_files="$(git ls-files)"
           fi
 
           matches() {
@@ -176,7 +175,7 @@ jobs:
           persist-credentials: false
 
       - name: Check migration versions
-        run: .github/scripts/check-migration-order.sh "origin/${{ github.base_ref || 'main' }}"
+        run: .github/scripts/check-migration-order.sh "origin/${{ github.base_ref || 'production' }}"
 
   rust-checks:
     name: Rust fmt and clippy

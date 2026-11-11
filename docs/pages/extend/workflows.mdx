@@ -561,14 +561,12 @@ slackbotv2:
       workflow: concurrent_agent_smoke
 ```
 
-Rules match literal phrases, case insensitively, in one explicit channel.
+Rules require an explicit @mention of this bot and match literal phrases, case insensitively, in one explicit channel.
 Bot messages, edits and unrelated messages are ignored. Signature and workspace
-policy checks run first. Slack must deliver `message.channels` events (and
-`message.groups` for private channels). The workflow must be enabled and its
+policy checks run first. Slack needs only the `app_mention` subscription for channel triggers. The workflow must be enabled and its
 agents must select a principal with model access. Delivery channel, author and
 thread are bound from the verified Slack event; static input cannot override
-these fields or select a principal. Matching `message` and `app_mention` events
-share a durable idempotency key.
+these fields or select a principal. Repeated mention deliveries share a durable idempotency key. Ordinary unmentioned channel messages do not start workflows.
 
 Use `centaur-workflows list` for discovered definitions and enabled status,
 `centaur-workflows runs --workflow NAME` for history, and

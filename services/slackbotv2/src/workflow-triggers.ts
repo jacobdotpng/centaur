@@ -42,10 +42,11 @@ export async function dispatchWorkflowMessage(
 ): Promise<boolean> {
   const event = payload?.event
   if (payload?.type !== 'event_callback' || !object(event)
-    || !['message', 'app_mention'].includes(String(event.type))
+    || event.type !== 'app_mention'
     || event.user === options.botUserId || event.subtype || event.bot_id || event.bot_profile
     || typeof event.user !== 'string' || !/^[UW][A-Z0-9]{8,}$/.test(event.user)
     || typeof event.channel !== 'string' || typeof event.ts !== 'string' || typeof event.text !== 'string') return false
+  if (!options.botUserId || !event.text.includes(`<@${options.botUserId}>`)) return false
   const text = event.text
   const trigger = triggers.find(rule => rule.channel === event.channel
     && new RegExp(`(?:^|\\W)${rule.phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:$|\\W)`, 'i').test(text))

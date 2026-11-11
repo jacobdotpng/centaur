@@ -565,6 +565,45 @@ export async function forwardToSessionApi(
   return openSessionEventStream(options, input)
 }
 
+/** Only original human messages in the smoke channel can start this workflow. */
+export async function dispatchSmokeWorkflowMessage(
+  options: SlackbotV2Options,
+  payload: unknown
+): Promise<boolean> {
+  if (!isJsonObject(payload) || payload.type !== 'event_callback'
+    || !isJsonObject(payload.event)) return false
+  const event = payload.event
+  if (event.type !== 'message' || event.subtype || event.bot_id || event.app_id
+    || event.channel !== 'C0CFN5YCEUV'
+    || typeof event.text !== 'string' || event.text.trim().toLowerCase() !== 'centaur gay'
+    || typeof event.user !== 'string' || !/^[UW][A-Z0-9]{8,}$/.test(event.user)
+    || typeof event.ts !== 'string' || !/^\d+\.\d+$/.test(event.ts)
+    || typeof payload.team_id !== 'string' || !/^T[A-Z0-9]+$/.test(payload.team_id)) return false
+  const action = 'start concurrent smoke workflow from Slack message'
+  const response = await fetchWithTimeout(
+    options.fetch ?? globalThis.fetch,
+    new URL('/api/workflows/messages/smoke', ensureTrailingSlash(options.apiUrl)),
+    {
+      method: 'POST',
+      headers: apiHeaders(options),
+      body: JSON.stringify({
+        channel: event.channel, user: event.user, team: payload.team_id,
+        message_ts: event.ts, thread_ts: event.thread_ts ?? event.ts,
+        text: event.text
+      })
+    },
+    sessionApiTimeoutMs(options),
+    action
+  )
+  await ensureApiOk(response, action)
+  const result: unknown = await response.json()
+  if (!isJsonObject(result) || result.ok !== true || typeof result.run_id !== 'string'
+    || typeof result.created !== 'boolean') {
+    throw new Error('Smoke workflow API returned an invalid admission result')
+  }
+  return true
+}
+
 export const WORKFLOW_ACTION_PREFIX = 'centaur.workflow.action:'
 /** Emitted by api-rs once a follow-up message reaches an active execution. */
 export const SESSION_STEERING_DELIVERED_EVENT = 'session.steering_delivered'

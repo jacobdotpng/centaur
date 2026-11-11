@@ -1,10 +1,6 @@
-# Lets a sandbox use selected admin API endpoints on behalf of a Console admin,
-# but only from that admin's Slack DM with the bot. The principal must be a
-# Slack DM principal in the bot's own workspace (per the Slack channel catalog)
-# linked to an active admin. Channel, Slack Connect, and Console-user principals
-# are refused; Console-user principals also run scheduled tasks and MCP
-# sessions with no admin present. Include into a subclass of an Api::V1 admin
-# controller.
+# Selected admin operations require a linked active Console admin in the bot's
+# home workspace. Slack channels additionally need explicit operator opt-in and
+# active catalog membership for the bot. Console/MCP/workflow sessions stay denied.
 module SandboxAdminAuthentication
   extend ActiveSupport::Concern
   include SandboxTokenAuthentication
@@ -26,11 +22,10 @@ module SandboxAdminAuthentication
 
     principal = current_proxy.principal
     user = principal.console_user
-    unless principal.kind == "slack_dm" && home_slack_team?(principal.slack_team_id) &&
-        user&.active? && user.admin?
+    unless admin_slack_scope?(principal) && user&.active? && user.admin?
       return render_error(
         status: :forbidden,
-        message: "admin changes require a Slack DM from an active Console admin in the bot's workspace"
+        message: "admin changes require an active Console admin linked to a home-workspace Slack DM or an explicitly trusted channel"
       )
     end
 
@@ -39,6 +34,15 @@ module SandboxAdminAuthentication
       "sandbox_admin_request admin=#{user.oid} principal=#{principal.oid} " \
       "proxy=#{current_proxy.oid} method=#{request.method} path=#{request.path}"
     )
+  end
+
+  def admin_slack_scope?(principal)
+    return false unless home_slack_team?(principal.slack_team_id)
+    return true if principal.kind == "slack_dm"
+    return false unless principal.kind == "slack_channel" && principal.labels.to_h["sandbox_admin"] == "true"
+
+    channel = SlackBotChannel.active.find_by(team_id: principal.slack_team_id, channel_id: principal.slack_channel_id)
+    channel.present? && channel.member_user_ids.include?(channel.bot_user_id)
   end
 
   def home_slack_team?(team_id)

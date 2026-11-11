@@ -549,12 +549,32 @@ Omit `channel` and `thread_ts` to return the combined output only. A mention use
 the reply thread. A user ID is not a channel destination. Merging a PR alone
 does not prove that the workflow has been loaded or executed.
 
-To start this smoke workflow from human Slack messages, set
-`slackbotv2.extraEnv.SLACKBOTV2_CONCURRENT_SMOKE_CHANNEL` to the target channel
-ID and deploy Slackbot v2. The trigger is disabled when unset. In that channel,
-messages containing the phrase `centaur gay` (case insensitive, word boundaries)
-start the workflow and reply in the message's thread, mentioning its author.
-Bot messages and message edits are ignored. Slack must deliver channel message
-events to the app; the bot must be a member of the channel. Signature and ingress
-policy checks apply before matching. Retries and matching `app_mention` events
-share a durable idempotency key based on channel and message timestamp.
+To start workflows from signed human Slack messages, configure
+`slackbotv2.workflowTriggers` in deployment values:
+
+```yaml
+slackbotv2:
+  workflowTriggers:
+    - id: smoke-example
+      channel: C12345678
+      phrase: run smoke
+      workflow: concurrent_agent_smoke
+```
+
+Rules match literal phrases, case insensitively, in one explicit channel.
+Bot messages, edits and unrelated messages are ignored. Signature and workspace
+policy checks run first. Slack must deliver `message.channels` events (and
+`message.groups` for private channels). The workflow must be enabled and its
+agents must select a principal with model access. Delivery channel, author and
+thread are bound from the verified Slack event; static input cannot override
+these fields or select a principal. Matching `message` and `app_mention` events
+share a durable idempotency key.
+
+Use `centaur-workflows list` for discovered definitions and enabled status,
+`centaur-workflows runs --workflow NAME` for history, and
+`centaur-workflows start NAME --input '{...}'` to obtain a real run ID.
+`centaur-workflows wait RUN_ID` returns its durable terminal result and exits
+unsuccessfully for failed or cancelled runs. Workflow history is not the registry,
+and Console scheduled tasks (`centaur-console tasks`) are a separate feature.
+A successful activation requires the definition, enablement, principal grants,
+trigger configuration and a verified run with any requested delivery.

@@ -72,6 +72,8 @@ spec:
           image: {{ printf "%s:%s" .Values.slackbotv2.image.repository .Values.slackbotv2.image.tag | quote }}
           imagePullPolicy: {{ .Values.slackbotv2.image.pullPolicy }}
           env:
+            - name: SLACKBOTV2_WORKFLOW_TRIGGERS
+              value: {{ toJson .Values.slackbotv2.workflowTriggers | quote }}
             - name: PORT
               value: "3001"
             - name: CENTAUR_API_URL

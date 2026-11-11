@@ -1129,6 +1129,13 @@ impl WorkflowRuntime {
             .cloned()
     }
 
+    /// Definitions and enablement, independent of whether a workflow has run.
+    pub async fn catalog(&self) -> Result<Vec<Value>, WorkflowRuntimeError> {
+        let discovery = discover_python_workflow_metadata().await?;
+        let enablement = WorkflowEnablement::from_env()?;
+        Ok(workflow_catalog(&discovery, &enablement))
+    }
+
     pub fn list_webhooks(&self) -> Vec<RegisteredWorkflowWebhook> {
         self.inner
             .webhook_registry
@@ -1899,6 +1906,20 @@ async fn reconcile_workflow_principals(
     let required = principals.keys().cloned().collect();
     let registered = registrar.register_workflow_principals(&principals).await;
     sandbox.update_workflow_principals(registered, required);
+}
+
+fn workflow_catalog(
+    discovery: &PythonWorkflowMetadata,
+    enablement: &WorkflowEnablement,
+) -> Vec<Value> {
+    discovery.workflow_names.iter().map(|name| {
+        let principal = discovery.principals.get(name).map(|decl| match decl {
+            WorkflowPrincipalDeclaration::Managed => canonical_workflow_principal_foreign_id(name),
+            WorkflowPrincipalDeclaration::Existing(id) => id.clone(),
+        });
+        json!({"workflow_name": name, "enabled": enablement.is_enabled(name), "principal": principal,
+            "starters": discovery.starters.get(name)})
+    }).collect()
 }
 
 async fn discover_python_workflow_metadata() -> Result<PythonWorkflowMetadata, WorkflowRuntimeError>
@@ -5374,6 +5395,23 @@ mod tests {
         assert_eq!(value["initial_run_id"], json!("initial-run"));
         assert_eq!(value["created_at"], json!("2026-06-09T13:35:05.044019Z"));
         assert_eq!(value["updated_at"], json!("2026-06-09T13:35:05.044019Z"));
+    }
+
+    #[test]
+    fn catalog_includes_disabled_workflows_without_runs() {
+        let mut discovery = PythonWorkflowMetadata::default();
+        discovery
+            .workflow_names
+            .extend(["enabled".to_owned(), "disabled".to_owned()]);
+        let enablement = WorkflowEnablement {
+            mode: WorkflowEnableMode::Allowlist,
+            allowed_names: BTreeSet::from(["enabled".to_owned()]),
+        };
+        let catalog = workflow_catalog(&discovery, &enablement);
+        assert_eq!(catalog.len(), 2);
+        assert_eq!(catalog[0]["workflow_name"], "disabled");
+        assert_eq!(catalog[0]["enabled"], false);
+        assert_eq!(catalog[1]["enabled"], true);
     }
 
     #[test]

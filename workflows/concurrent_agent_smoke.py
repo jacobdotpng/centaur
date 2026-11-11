@@ -9,6 +9,8 @@ from typing import Any
 from api.workflow_engine import WorkflowContext
 
 WORKFLOW_NAME = "concurrent_agent_smoke"
+WORKFLOW_PRINCIPAL = True
+AGENT_PRINCIPAL = "workflow-concurrent-agent-smoke"
 
 
 @dataclass
@@ -28,9 +30,10 @@ async def handler(inp: Input, ctx: WorkflowContext) -> dict[str, Any]:
 
     batch = await ctx.run_agents(
         [
-            {"name": "add_poop", "text": "Reply with exactly: poop"},
+            {"name": "add_poop", "text": "Reply with exactly: poop", "principal": AGENT_PRINCIPAL},
             {
                 "name": "tag_user",
+                "principal": AGENT_PRINCIPAL,
                 "text": f"Reply with exactly this Slack mention: <@{inp.slack_user_id}>",
             },
         ],

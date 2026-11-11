@@ -61,6 +61,7 @@ my-tool --help
 
 The open-source tool inventory lives in this `tools/` tree and changes over time. To see what ships in a running sandbox, use `centaur-tools list`; private deployments may mount additional overlay tool directories.
 
+- `centaur-workflows`: discover durable workflow definitions and enablement, start runs, and wait for verified results. These are distinct from Console scheduled tasks.
 - `centaur-console`: inspect sandbox permissions and configured OAuth apps, and
   manage the linked user's or current Slack channel's scheduled tasks.
 - `centaur-skills`: discover merged repository and overlay skills alongside

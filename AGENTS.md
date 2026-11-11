@@ -111,6 +111,15 @@ For a runtime change requested for publication, local proof means:
 4. make a real request through the changed path and inspect the durable result;
 5. only then commit or push, and only if requested.
 
+When working inside a deployed agent sandbox without a Docker daemon or local
+Kubernetes context, a user-authorized PR may use available unit/type checks plus
+required CI instead of the local-stack steps above. State the missing local
+checks accurately; do not repeatedly ask the user to install infrastructure in
+the sandbox. Publication is not proof of deployment: follow the configured
+release pipeline and verify a real run and delivery before reporting a live
+feature as complete. This exception does not authorize unrelated merges or
+production changes beyond the user's request.
+
 For a missing, duplicate, or stalled chat response, trace the full chain:
 platform receipt -> session creation -> durable message -> execution -> event
 stream -> render obligation -> final platform message. A healthy pod or one log

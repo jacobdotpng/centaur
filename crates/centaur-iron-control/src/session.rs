@@ -140,8 +140,8 @@ impl SessionRegistrar {
     }
 
     /// Resolve the human requesting a turn. When creation is disabled, a
-    /// missing derived requester is omitted so an approved conversation can
-    /// proceed without implicitly approving that user for a future DM.
+    /// verified home-team Slack actors receive an identity-only principal.
+    /// It can act for its channel but cannot pass preapproved DM admission.
     pub async fn resolve_requester(
         &self,
         thread_key: &str,
@@ -164,13 +164,21 @@ impl SessionRegistrar {
                     metadata.get("slack_user_email").and_then(Value::as_str),
                 );
                 let existing = self.merge_existing_labels(&mut input).await?;
-                match principal_write(existing, create_if_missing) {
-                    PrincipalWrite::UseExisting(principal) => Ok(Some(principal)),
-                    PrincipalWrite::Upsert => {
-                        Ok(Some(self.client.refresh_principal(&input).await?))
-                    }
-                    PrincipalWrite::Reject => Ok(None),
+                if let Some(principal) = existing.as_ref()
+                    && !create_if_missing
+                {
+                    return Ok(Some(principal.clone()));
                 }
+                if !create_if_missing {
+                    if input.kind.as_deref() != Some("slack_dm") {
+                        return Ok(None);
+                    }
+                    // Identity for a verified channel actor is not DM approval.
+                    input
+                        .labels
+                        .insert("requester_only".to_owned(), "true".to_owned());
+                }
+                Ok(Some(self.client.refresh_principal(&input).await?))
             }
         }
     }
@@ -215,6 +223,11 @@ enum PrincipalWrite {
 fn principal_write(existing: Option<Principal>, create_if_missing: bool) -> PrincipalWrite {
     match (existing, create_if_missing) {
         (_, true) => PrincipalWrite::Upsert,
+        (Some(existing), false)
+            if existing.labels.get("requester_only").map(String::as_str) == Some("true") =>
+        {
+            PrincipalWrite::Reject
+        }
         (Some(existing), false) => PrincipalWrite::UseExisting(existing),
         (None, false) => PrincipalWrite::Reject,
     }
@@ -625,6 +638,49 @@ mod tests {
         assert_eq!(upsert["data"]["slack_email"], "ada@example.com");
         assert_eq!(upsert["data"]["labels"]["team"], "finance");
         assert_eq!(upsert["data"]["labels"]["managed-by"], "centaur");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn preapproved_channel_gets_requester_identity_without_dm_admission() {
+        let (base_url, requests, server) = spawn_iron_control_stub(|method, _| match method {
+            "GET" => not_found(),
+            "PUT" => principal(
+                "prn_actor",
+                "slack-user-t123-u123",
+                json!({"requester_only":"true"}),
+            ),
+            _ => (
+                "500 Internal Server Error",
+                r#"{"error":"unexpected"}"#.to_owned(),
+            ),
+        })
+        .await;
+        let registrar = SessionRegistrar::new(IronControlClient::new(base_url, "test-key"));
+        let actor = registrar
+            .resolve_requester(
+                "slack:T123:C123:123.456",
+                Some(&json!({
+                    "slack_user_id":"U123", "slack_team_id":"T123", "slack_home_team_id":"T123"
+                })),
+                false,
+            )
+            .await
+            .expect("resolve actor")
+            .expect("identity returned");
+        assert_eq!(principal_write(Some(actor), false), PrincipalWrite::Reject);
+        let requests = requests.lock().unwrap();
+        let upsert = requests
+            .iter()
+            .find(|r| r.method == "PUT")
+            .and_then(|r| r.body.as_ref())
+            .expect("identity upserted");
+        assert_eq!(upsert["data"]["labels"]["requester_only"], "true");
+        assert!(
+            requests
+                .iter()
+                .all(|r| !r.path.ends_with("/slack_channel_permissions"))
+        );
         server.abort();
     }
 

@@ -329,19 +329,29 @@ impl WorkflowPrincipalRegistrar {
         for (workflow_name, declaration) in principals {
             let result = match declaration {
                 WorkflowPrincipalDeclaration::Managed => {
-                    let foreign_id = canonical_workflow_principal_foreign_id(workflow_name);
-                    self.client
-                        .refresh_principal(&PrincipalInput {
-                            foreign_id,
-                            name: format!("Workflow {workflow_name}"),
-                            labels: workflow_principal_labels(workflow_name),
-                            kind: Some("workflow".to_owned()),
-                            slack_user_id: None,
-                            slack_channel_id: None,
-                            slack_team_id: None,
-                            slack_email: None,
-                        })
-                        .await
+                    async {
+                        let foreign_id = canonical_workflow_principal_foreign_id(workflow_name);
+                        let mut labels = match self.client.get_principal(&foreign_id).await {
+                            Ok(existing) => existing.labels,
+                            Err(error) if error.is_not_found() => BTreeMap::new(),
+                            Err(error) => return Err(error),
+                        };
+                        // Preserve operator ownership/access metadata across reconciliation.
+                        labels.extend(workflow_principal_labels(workflow_name));
+                        self.client
+                            .refresh_principal(&PrincipalInput {
+                                foreign_id,
+                                name: format!("Workflow {workflow_name}"),
+                                labels,
+                                kind: Some("workflow".to_owned()),
+                                slack_user_id: None,
+                                slack_channel_id: None,
+                                slack_team_id: None,
+                                slack_email: None,
+                            })
+                            .await
+                    }
+                    .await
                 }
                 WorkflowPrincipalDeclaration::Existing(reference) => {
                     self.client.get_principal(reference).await
@@ -5524,6 +5534,69 @@ mod tests {
                 .expect("optional workflow should be allowed"),
             None
         );
+    }
+
+    #[tokio::test]
+    async fn workflow_registration_preserves_operator_labels() {
+        use tokio::io::AsyncReadExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for expected_method in ["GET", "PUT"] {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut request = String::new();
+                reader.read_line(&mut request).await.unwrap();
+                assert!(request.starts_with(expected_method));
+                let mut length = 0;
+                loop {
+                    let mut header = String::new();
+                    reader.read_line(&mut header).await.unwrap();
+                    if header == "\r\n" {
+                        break;
+                    }
+                    if let Some(value) = header.to_lowercase().strip_prefix("content-length:") {
+                        length = value.trim().parse::<usize>().unwrap();
+                    }
+                }
+                let mut body = vec![0; length];
+                reader.read_exact(&mut body).await.unwrap();
+                if expected_method == "PUT" {
+                    let value: Value = serde_json::from_slice(&body).unwrap();
+                    assert_eq!(
+                        value["data"]["labels"]["recabutbetter.workflow-managed"],
+                        "true"
+                    );
+                    assert_eq!(value["data"]["labels"]["operator-note"], "retain");
+                    assert_eq!(value["data"]["labels"]["workflow_name"], "nightly_report");
+                }
+                let body = json!({"data": {"id": "prn_workflow", "foreign_id": "workflow-nightly-report",
+                    "name": "Workflow nightly_report", "labels": {
+                        "recabutbetter.workflow-managed": "true", "operator-note": "retain"
+                    }}}).to_string();
+                let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
+                reader
+                    .get_mut()
+                    .write_all(response.as_bytes())
+                    .await
+                    .unwrap();
+            }
+        });
+        let registrar = WorkflowPrincipalRegistrar::new(IronControlClient::new(
+            format!("http://{address}"),
+            "test-key",
+        ));
+        let registered = registrar
+            .register_workflow_principals(&BTreeMap::from([(
+                "nightly_report".to_owned(),
+                WorkflowPrincipalDeclaration::Managed,
+            )]))
+            .await;
+        assert_eq!(
+            registered.get("nightly_report").map(String::as_str),
+            Some("prn_workflow")
+        );
+        server.await.unwrap();
     }
 
     #[tokio::test]

@@ -512,6 +512,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn smoke_messages_require_slack_ingress_and_the_configured_channel() {
+        for (token, channel, expected) in [
+            (
+                "test-slackbot-key".to_owned(),
+                "C0CFN5YCEUV",
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
+                "test-slackbot-key".to_owned(),
+                "C12345678",
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                principal_token("prn_sandbox"),
+                "C0CFN5YCEUV",
+                StatusCode::FORBIDDEN,
+            ),
+        ] {
+            let response = build_router_with_app_state(AppState::unready(test_auth_with_slack()))
+                .oneshot(
+                    Request::builder()
+                        .method(Method::POST)
+                        .uri("/api/workflows/messages/smoke")
+                        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(
+                            json!({
+                                "channel": channel, "user": "U0CFM5P1SSF", "team": "T12345678",
+                                "message_ts": "1794426358.361759", "thread_ts": "1794426358.361759",
+                                "text": "centaur gay"
+                            })
+                            .to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected);
+        }
+    }
+
+    #[tokio::test]
     async fn slack_external_team_ids_are_readable_by_slackbot_and_writable_by_console() {
         let slackbot = "test-slackbot-key".to_owned();
         let body = r#"{"slack_external_team_ids":["T0PARTNER"]}"#;

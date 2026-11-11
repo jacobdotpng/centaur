@@ -140,6 +140,38 @@ afterAll(async () => {
 })
 
 describe('slackbotv2', () => {
+  it('admits signed smoke phrase messages without creating a chat execution and retries failures', async () => {
+    const requests: unknown[] = []
+    let fail = false
+    bot = createTestBot({ fetch: async (input, init) => {
+      if (String(input).endsWith('/api/workflows/messages/smoke')) {
+        requests.push(JSON.parse(String(init?.body)))
+        return Response.json({ ok: !fail, created: true, run_id: 'run-smoke' }, { status: fail ? 503 : 200 })
+      }
+      return globalThis.fetch(input, init)
+    } })
+    const event = {
+      type: 'message', channel: 'C0CFN5YCEUV', user: USER_ID,
+      text: 'centaur gay', ts: '1794426358.361759'
+    }
+    const accepted = await deliverEvent(event)
+    expect(accepted.response.status).toBe(200)
+    expect(requests).toHaveLength(1)
+    expect(codexApi.creates).toHaveLength(0)
+    expect(codexApi.executes).toHaveLength(0)
+    fail = true
+    const failed = await deliverEvent(event, { retryNum: '1' })
+    expect(failed.response.status).toBeGreaterThanOrEqual(500)
+    expect(requests).toHaveLength(2)
+    expect(requests[0]).toEqual(requests[1])
+    fail = false
+    const unsigned = signedSlackEvent({ event_id: 'Ev-invalid-smoke', event })
+    unsigned.headers = { ...unsigned.headers, 'x-slack-signature': 'v0=invalid' }
+    const rejected = await bot.app.request('/api/webhooks/slack', unsigned)
+    expect(rejected.status).toBe(401)
+    expect(requests).toHaveLength(2)
+  })
+
   // Legacy (non-agent-view) DMs run end to end in e2e/tests/context.test.ts.
   it('routes agent-view DM roots and replies to their own sessions', async () => {
     bot = createTestBot({ agentViewEnabled: true })

@@ -272,6 +272,7 @@ pub fn build_router_with_app_state(state: AppState) -> Router {
             post(cancel_workflow_run),
         )
         .route("/api/workflows/events", post(emit_workflow_event))
+        .route("/api/workflows/messages/smoke", post(invoke_smoke_message))
         .route(
             "/api/workflows/actions/invoke",
             post(invoke_workflow_button),
@@ -586,7 +587,7 @@ fn route_access(method: &Method, route: &str) -> Option<RouteAccess> {
             capability(Capability::WorkflowsWrite)
         }
         (&Method::POST, "/api/workflows/events") => capability(Capability::WorkflowsEvents),
-        (&Method::POST, "/api/workflows/actions/invoke") => {
+        (&Method::POST, "/api/workflows/actions/invoke" | "/api/workflows/messages/smoke") => {
             capability(Capability::WorkflowsActions)
         }
         (&Method::GET | &Method::HEAD, "/api/slack/external-team-ids") => {
@@ -2630,6 +2631,78 @@ async fn invoke_workflow_button(
     Ok(Json(serde_json::to_value(run)?))
 }
 
+/// Narrow ingress entry point: it cannot select another workflow or channel.
+#[derive(Deserialize)]
+struct SmokeMessage {
+    channel: String,
+    user: String,
+    team: String,
+    message_ts: String,
+    thread_ts: String,
+    text: String,
+}
+
+fn smoke_message_request(message: SmokeMessage) -> Result<CreateWorkflowRunRequest, ApiError> {
+    let slack_id = |value: &str, prefixes: &[u8]| {
+        value.len() >= 9
+            && prefixes.contains(&value.as_bytes()[0])
+            && value
+                .bytes()
+                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+    };
+    let timestamp = |value: &str| {
+        value.split_once('.').is_some_and(|(a, b)| {
+            !a.is_empty() && !b.is_empty() && a.bytes().chain(b.bytes()).all(|b| b.is_ascii_digit())
+        })
+    };
+    if message.channel != "C0CFN5YCEUV"
+        || !message.text.trim().eq_ignore_ascii_case("centaur gay")
+        || !slack_id(&message.user, b"UW")
+        || !slack_id(&message.team, b"T")
+        || !timestamp(&message.message_ts)
+        || !timestamp(&message.thread_ts)
+    {
+        return Err(ApiError::BadRequest(
+            "invalid smoke message trigger".to_owned(),
+        ));
+    }
+    Ok(CreateWorkflowRunRequest {
+        workflow_name: "concurrent_agent_smoke".to_owned(),
+        input: json!({
+            "slack_user_id": message.user,
+            "channel": message.channel,
+            "thread_ts": message.thread_ts,
+        }),
+        idempotency_key: Some(format!(
+            "slack.smoke:{}:{}:{}",
+            message.team, message.channel, message.message_ts
+        )),
+        harness_type: None,
+        max_attempts: None,
+    })
+}
+
+async fn invoke_smoke_message(
+    State(state): State<AppState>,
+    Extension(caller): Extension<AuthenticatedCaller>,
+    Json(message): Json<SmokeMessage>,
+) -> Result<Json<Value>, ApiError> {
+    if caller.identity() != "slackbot" {
+        return Err(ApiError::Forbidden("Slack ingress required".to_owned()));
+    }
+    let request = smoke_message_request(message)?;
+    let workflows = workflow_runtime(&state)?;
+    let starters = workflows.workflow_starters(&request.workflow_name);
+    if !caller_may_start_workflow(starters.as_ref(), caller.class()) {
+        return Err(ApiError::Forbidden(
+            "workflow does not allow Slack ingress".to_owned(),
+        ));
+    }
+    Ok(Json(serde_json::to_value(
+        workflows.create_run(request).await?,
+    )?))
+}
+
 async fn create_workflow_run(
     State(state): State<AppState>,
     Extension(caller): Extension<AuthenticatedCaller>,
@@ -4073,5 +4146,53 @@ mod webhook_tests {
         )
         .unwrap_err();
         assert!(matches!(error, ApiError::Internal(_)));
+    }
+}
+
+#[cfg(test)]
+mod smoke_message_tests {
+    use super::*;
+
+    fn message() -> SmokeMessage {
+        SmokeMessage {
+            channel: "C0CFN5YCEUV".into(),
+            user: "U0CFM5P1SSF".into(),
+            team: "T12345678".into(),
+            message_ts: "1794426358.361759".into(),
+            thread_ts: "1794426300.000001".into(),
+            text: "centaur gay".into(),
+        }
+    }
+
+    #[test]
+    fn maps_actor_and_thread_and_deduplicates_redeliveries() {
+        let first = smoke_message_request(message()).unwrap();
+        let retry = smoke_message_request(message()).unwrap();
+        assert_eq!(first.workflow_name, "concurrent_agent_smoke");
+        assert_eq!(first.input["slack_user_id"], "U0CFM5P1SSF");
+        assert_eq!(first.input["thread_ts"], "1794426300.000001");
+        assert_eq!(first.idempotency_key, retry.idempotency_key);
+        let mut next = message();
+        next.message_ts = "1794426359.000001".into();
+        assert_ne!(
+            first.idempotency_key,
+            smoke_message_request(next).unwrap().idempotency_key
+        );
+    }
+
+    #[test]
+    fn rejects_other_channels_phrases_and_invalid_identities() {
+        for field in ["channel", "text", "user", "team", "message_ts", "thread_ts"] {
+            let mut input = message();
+            match field {
+                "channel" => input.channel = "C12345678".into(),
+                "text" => input.text = "please say centaur gay".into(),
+                "user" => input.user.clear(),
+                "team" => input.team.clear(),
+                "message_ts" => input.message_ts = ".".into(),
+                _ => input.thread_ts = "invalid".into(),
+            }
+            assert!(smoke_message_request(input).is_err(), "{field}");
+        }
     }
 }

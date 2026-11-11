@@ -42,6 +42,7 @@ import { slackUserIdForMessage } from './slack-user'
 import {
   collectInitialContext,
   dispatchSlackBlockAction,
+  dispatchSmokeWorkflowMessage,
   fetchWithTimeout,
   forwardToSessionApi,
   harnessRestartPreamble,
@@ -681,6 +682,17 @@ export function createSlackbotV2(options: SlackbotV2Options): SlackbotV2 {
       if (!allowed) {
         outcome = 'ignored'
         return new globalThis.Response('ok', { status: 200 })
+      }
+      // The signature and channel/team policy gates above must run first.
+      // Await durable admission so transient failures ask Slack to retry.
+      try {
+        if (await dispatchSmokeWorkflowMessage(options, parseSlackWebhookPayload(rawBody))) {
+          return new globalThis.Response('ok', { status: 200 })
+        }
+      } catch (error) {
+        outcome = 'error'
+        logger.warn('slackbotv2_smoke_workflow_admission_failed', { error: errorMessage(error) })
+        return new globalThis.Response('Workflow message could not be recorded. Please retry.', { status: 503 })
       }
       const interaction = parseSlackWebhookPayload(rawBody)
       const workflowAction = interaction?.type === 'block_actions'

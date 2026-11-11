@@ -516,3 +516,35 @@ small run with `eager_start: true`. If the workflow is missing, inspect
 `WORKFLOW_NAME`. For webhooks, also check for
 `workflow_webhook_registered` in the API logs and send a signed request to the
 public `/api/webhooks/{slug}` URL.
+
+## Concurrent agent smoke test
+
+The built-in `concurrent_agent_smoke` workflow runs two independent agent turns
+with `max_concurrency=2`: one returns `poop`, the other returns a Slack user
+mention. The handler combines their results in input order, checks the exact
+output, and fails without posting if either agent fails or returns unexpected
+text.
+
+Workflows are Python definitions discovered from `WORKFLOW_DIRS`, rather than
+records created with `centaur-console create-task`. To add one, merge the file
+into a configured workflow source and deploy or refresh that source through
+your deployment process. Then start it from Console or the authorized
+`POST /api/workflows/runs` API with this request body (replace the example IDs
+and timestamp):
+
+```json
+{
+  "workflow_name": "concurrent_agent_smoke",
+  "input": {
+    "slack_user_id": "U12345678",
+    "channel": "C12345678",
+    "thread_ts": "1234567890.123456"
+  }
+}
+```
+
+The workflow checkpoints Slack delivery with `ctx.step("post_result", ...)`.
+Omit `channel` and `thread_ts` to return the combined output only. A mention uses
+`<@USER_ID>`; a message destination uses a channel ID, with `thread_ts` selecting
+the reply thread. A user ID is not a channel destination. Merging a PR alone
+does not prove that the workflow has been loaded or executed.

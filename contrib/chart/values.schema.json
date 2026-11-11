@@ -461,6 +461,7 @@
           "enum": ["automatic", "preapproved"]
         },
         "sandboxRunningLimit": { "type": "integer", "minimum": 0 },
+        "sandboxDeploymentReserved": { "type": "integer", "minimum": 0 },
         "sandboxWarmPools": {
           "type": "array",
           "items": {

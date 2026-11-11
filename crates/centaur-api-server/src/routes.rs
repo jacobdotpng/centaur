@@ -845,8 +845,9 @@ async fn execute_session(
             admit_api_client_execution(&state, &runtime, &client, &thread_key).await?;
             Some(api_client_metadata(client.client_id(), request.metadata))
         }
-        None => sanitize_execute_metadata(caller.class(), request.metadata),
+        None => request.metadata,
     };
+    let metadata = sanitize_execute_metadata(caller.class(), metadata);
     let execution = runtime
         .enqueue_session_execution(
             &thread_key,
@@ -898,6 +899,12 @@ fn sanitize_execute_metadata(
         && let Some(Value::Object(fields)) = metadata.as_mut()
     {
         fields.remove("requester_principal_foreign_id");
+    }
+    // Deployment capacity is reserved for the static admin used by the deployer.
+    if caller_class != CallerClass::Admin
+        && let Some(Value::Object(fields)) = metadata.as_mut()
+    {
+        fields.remove("deployment_verification");
     }
     metadata
 }
@@ -1106,6 +1113,26 @@ mod session_authorization_tests {
             Some("prn_owner")
         ));
         assert!(!principal_subject_owns_session(Some("prn_owner"), None));
+    }
+
+    #[test]
+    fn only_admin_callers_may_request_deployment_reserve() {
+        let metadata = json!({"deployment_verification": true, "other": "preserved"});
+        assert_eq!(
+            sanitize_execute_metadata(CallerClass::Admin, Some(metadata.clone())),
+            Some(metadata.clone())
+        );
+        for class in [
+            CallerClass::Console,
+            CallerClass::Ingress,
+            CallerClass::Principal,
+            CallerClass::ApiClient,
+        ] {
+            assert_eq!(
+                sanitize_execute_metadata(class, Some(metadata.clone())),
+                Some(json!({"other": "preserved"}))
+            );
+        }
     }
 
     #[test]

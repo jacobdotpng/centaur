@@ -872,6 +872,13 @@ struct SandboxArgs {
         default_value_t = 0
     )]
     sandbox_running_limit: usize,
+    /// Extra on-demand slots for admin-authenticated deployment verification.
+    #[arg(
+        long = "session-sandbox-deployment-reserved",
+        env = "SESSION_SANDBOX_DEPLOYMENT_RESERVED",
+        default_value_t = 0
+    )]
+    sandbox_deployment_reserved: usize,
     /// Stop any sandbox older than this; sessions replace reaped sandboxes on
     /// their next message. Warm-pool sandboxes age from their claim, and
     /// sandboxes with an active execution are skipped unless that execution
@@ -1695,6 +1702,7 @@ impl SandboxArgs {
     fn sandbox_capacity_config(&self) -> Option<SandboxCapacityConfig> {
         (self.sandbox_running_limit > 0).then_some(SandboxCapacityConfig {
             max_running: self.sandbox_running_limit,
+            deployment_reserved: self.sandbox_deployment_reserved,
         })
     }
 

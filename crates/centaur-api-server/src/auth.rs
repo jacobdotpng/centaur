@@ -28,6 +28,7 @@ pub(crate) enum Capability {
     SandboxesDrain,
     WorkflowsRead,
     WorkflowsWrite,
+    SlackWorkflowStart,
     WorkflowsEvents,
     WorkflowsActions,
     AdminSync,
@@ -36,12 +37,13 @@ pub(crate) enum Capability {
 }
 
 impl Capability {
-    const ALL: [Self; 10] = [
+    const ALL: [Self; 11] = [
         Self::SessionsRead,
         Self::SessionsWrite,
         Self::SandboxesDrain,
         Self::WorkflowsRead,
         Self::WorkflowsWrite,
+        Self::SlackWorkflowStart,
         Self::WorkflowsEvents,
         Self::WorkflowsActions,
         Self::AdminSync,
@@ -170,6 +172,7 @@ impl ApiAuthConfig {
             }
             if spec.identity == "slackbot" {
                 capabilities.push(Capability::WorkflowsActions);
+                capabilities.push(Capability::SlackWorkflowStart);
                 capabilities.push(Capability::SlackExternalTeamsRead);
             }
             callers.push(static_caller(
@@ -212,6 +215,7 @@ impl ApiAuthConfig {
                 Capability::SessionsWrite,
                 Capability::WorkflowsEvents,
                 Capability::WorkflowsActions,
+                Capability::SlackWorkflowStart,
                 Capability::SlackExternalTeamsRead,
             ],
             Some(&["slack:"]),

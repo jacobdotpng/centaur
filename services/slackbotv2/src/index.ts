@@ -42,6 +42,7 @@ import { slackUserIdForMessage } from './slack-user'
 import {
   collectInitialContext,
   dispatchSlackBlockAction,
+  dispatchConcurrentSmokeMessage,
   fetchWithTimeout,
   forwardToSessionApi,
   harnessRestartPreamble,
@@ -683,6 +684,10 @@ export function createSlackbotV2(options: SlackbotV2Options): SlackbotV2 {
         return new globalThis.Response('ok', { status: 200 })
       }
       const interaction = parseSlackWebhookPayload(rawBody)
+      // Persist before acknowledging so transient failures can be retried by Slack.
+      if (await dispatchConcurrentSmokeMessage(options, interaction)) {
+        return new globalThis.Response('ok', { status: 200 })
+      }
       const workflowAction = interaction?.type === 'block_actions'
         && Array.isArray(interaction.actions)
         && interaction.actions.some(action => isJsonObject(action)

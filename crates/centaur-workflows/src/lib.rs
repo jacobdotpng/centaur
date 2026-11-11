@@ -5570,11 +5570,17 @@ mod tests {
                     assert_eq!(value["data"]["labels"]["operator-note"], "retain");
                     assert_eq!(value["data"]["labels"]["workflow_name"], "nightly_report");
                 }
-                let body = json!({"data": {"id": "prn_workflow", "foreign_id": "workflow-nightly-report",
+                let body =
+                    json!({"data": {"id": "prn_workflow", "foreign_id": "workflow-nightly-report",
                     "name": "Workflow nightly_report", "labels": {
                         "recabutbetter.workflow-managed": "true", "operator-note": "retain"
-                    }}}).to_string();
-                let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
+                    }}})
+                    .to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
                 reader
                     .get_mut()
                     .write_all(response.as_bytes())

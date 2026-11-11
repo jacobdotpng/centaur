@@ -20,7 +20,7 @@ admin_app = typer.Typer(
         "Create Slack and workflow principals and static, pg_dsn, or gcp_id_token secrets, "
         "and manage roles, principal and role secret grants, Slack permissions, sandbox access, "
         "and allowed Slack Connect workspaces. "
-        "Works only in an active Console admin's Slack DM."
+        "Requires an active Console admin linked to the Slack DM or an explicitly trusted bot-member channel."
     )
 )
 app.add_typer(admin_app, name="admin")

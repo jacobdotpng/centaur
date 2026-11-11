@@ -182,6 +182,52 @@ class Api::V1::SandboxAdminControllerTest < ActionDispatch::IntegrationTest
     assert_not_includes @channel.reload.roles, @role
   end
 
+  test "an opted-in home channel linked to an admin can enable its workflow permissions" do
+    proxy = trusted_channel_proxy
+    with_token(proxy) do |headers|
+      patch "/api/v1/sandbox/admin/principals/#{proxy.principal.oid}/sandbox_access",
+            params: { data: { sandbox_workflows_read_enabled: true, sandbox_workflows_write_enabled: true } },
+            headers: headers, as: :json
+      assert_response :ok
+    end
+    assert proxy.principal.reload.sandbox_workflows_read_enabled
+    assert proxy.principal.sandbox_workflows_write_enabled
+  end
+
+  test "channel admin requires an explicit string opt-in on every request" do
+    proxy = trusted_channel_proxy
+    [ {}, { "sandbox_admin" => true }, { "sandbox_admin" => "false" } ].each do |labels|
+      proxy.principal.update!(labels: labels)
+      with_token(proxy) { |headers| get "/api/v1/sandbox/admin/roles", headers: headers }
+      assert_response :forbidden
+    end
+  end
+
+  test "channel admin requires active bot membership" do
+    proxy = trusted_channel_proxy
+    channel = slack_bot_channels(:general)
+    [ { active: false }, { archived: true }, { member_user_ids: [] } ].each do |change|
+      channel.update!(active: true, archived: false, member_user_ids: [ channel.bot_user_id ])
+      channel.update!(change)
+      with_token(proxy) { |headers| get "/api/v1/sandbox/admin/roles", headers: headers }
+      assert_response :forbidden
+    end
+  end
+
+  test "channel admin rejects non-admin disabled and external identities" do
+    proxy = trusted_channel_proxy
+    admin = users(:acme_admin)
+    [ { status: :disabled }, { status: :active, admin: false } ].each do |change|
+      admin.update!(change)
+      with_token(proxy) { |headers| get "/api/v1/sandbox/admin/roles", headers: headers }
+      assert_response :forbidden
+    end
+    admin.update!(status: :active, admin: true)
+    proxy.principal.update!(slack_team_id: "T0EXTERNAL1")
+    with_token(proxy) { |headers| get "/api/v1/sandbox/admin/roles", headers: headers }
+    assert_response :forbidden
+  end
+
   test "an admin's DM loses access once the admin is disabled or demoted" do
     admin = users(:acme_admin)
     proxy = dm_proxy_for(admin)
@@ -454,6 +500,14 @@ class Api::V1::SandboxAdminControllerTest < ActionDispatch::IntegrationTest
   end
 
   # The Slack channel catalog fixtures put the bot in T0123456789.
+  def trusted_channel_proxy
+    channel = slack_bot_channels(:general)
+    proxy = proxy_for(users(:acme_admin), kind: :slack_channel, slack_team_id: channel.team_id,
+                      slack_user_id: nil, slack_channel_id: channel.channel_id)
+    proxy.principal.update!(labels: { "sandbox_admin" => "true" })
+    proxy
+  end
+
   def dm_proxy_for(user, slack_team_id: "T0123456789")
     proxy_for(user, kind: :slack_dm, slack_team_id: slack_team_id)
   end

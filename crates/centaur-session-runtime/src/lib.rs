@@ -195,11 +195,32 @@ pub struct SandboxCapacityConfig {
     /// Best-effort admission limit based on sandboxes observed as running.
     /// Kubernetes remains the hard capacity boundary.
     pub max_running: usize,
+    /// Additional slots exclusively for admin-authenticated deployment checks.
+    pub deployment_reserved: usize,
 }
 
 impl SandboxCapacityConfig {
     pub fn is_enabled(&self) -> bool {
         self.max_running > 0
+    }
+
+    fn rejection(
+        &self,
+        normal: usize,
+        reserved: usize,
+        deployment: bool,
+    ) -> Option<(usize, usize)> {
+        let total = normal.saturating_add(reserved);
+        let limit = self.max_running.saturating_add(self.deployment_reserved);
+        if total >= limit {
+            Some((total, limit))
+        } else if deployment && reserved >= self.deployment_reserved {
+            Some((reserved, self.deployment_reserved))
+        } else if !deployment && normal >= self.max_running {
+            Some((normal, self.max_running))
+        } else {
+            None
+        }
     }
 }
 
@@ -692,6 +713,7 @@ impl SandboxCapacityController {
         trigger_thread_key: &ThreadKey,
         trigger_execution_id: &str,
         operation: &'static str,
+        deployment: bool,
         action: F,
     ) -> Result<T, SessionRuntimeError>
     where
@@ -702,8 +724,8 @@ impl SandboxCapacityController {
         // is deliberately a best-effort ingress gate; Kubernetes owns hard
         // resource enforcement.
         let _guard = self.lock.lock().await;
-        let running = self.running_slot_count().await?;
-        if running >= self.config.max_running {
+        let (normal, reserved) = self.running_slot_count().await?;
+        if let Some((running, max_running)) = self.config.rejection(normal, reserved, deployment) {
             info!(
                 component = COMPONENT_SESSION_RUNTIME,
                 event = "sandbox_capacity_rejected",
@@ -711,11 +733,11 @@ impl SandboxCapacityController {
                 trigger_execution_id,
                 operation,
                 running,
-                max_running = self.config.max_running,
+                max_running,
                 "rejected sandbox operation at observed running limit"
             );
             return Err(SessionRuntimeError::CapacityExceeded {
-                max_running: self.config.max_running,
+                max_running,
                 running,
                 operation,
             });
@@ -723,7 +745,7 @@ impl SandboxCapacityController {
         action().await
     }
 
-    async fn running_slot_count(&self) -> Result<usize, SessionRuntimeError> {
+    async fn running_slot_count(&self) -> Result<(usize, usize), SessionRuntimeError> {
         let observed = self.manager.list_observed().await?;
         // Ready warm sandboxes are bounded by the warm-pool target and serve
         // requests without a new sandbox, so they do not block cold admission.
@@ -733,13 +755,24 @@ impl SandboxCapacityController {
             .await?
             .into_iter()
             .collect::<HashSet<_>>();
-        Ok(observed
-            .iter()
-            .filter(|observed| {
-                status_consumes_running_slot(&observed.status)
-                    && !ready_warm.contains(observed.id.as_str())
-            })
-            .count())
+        let mut normal = 0;
+        let mut reserved = 0;
+        for sandbox in observed.iter().filter(|sandbox| {
+            status_consumes_running_slot(&sandbox.status)
+                && !ready_warm.contains(sandbox.id.as_str())
+        }) {
+            if sandbox
+                .labels
+                .get("centaur.dev/deployment-verification")
+                .map(String::as_str)
+                == Some("true")
+            {
+                reserved += 1;
+            } else {
+                normal += 1;
+            }
+        }
+        Ok((normal, reserved))
     }
 }
 
@@ -1526,12 +1559,32 @@ impl SessionRuntime {
         Fut: Future<Output = Result<T, SessionRuntimeError>>,
     {
         if let Some(capacity) = self.capacity.as_ref() {
+            let deployment = self.execution_uses_deployment_reserve(execution_id).await?;
             capacity
-                .run_with_capacity(thread_key, execution_id, operation, action)
+                .run_with_capacity(thread_key, execution_id, operation, deployment, action)
                 .await
         } else {
             action().await
         }
+    }
+
+    async fn execution_uses_deployment_reserve(
+        &self,
+        execution_id: &str,
+    ) -> Result<bool, SessionRuntimeError> {
+        if !self
+            .capacity
+            .as_ref()
+            .is_some_and(|c| c.config.deployment_reserved > 0)
+        {
+            return Ok(false);
+        }
+        let request = self.store.execution_request(execution_id).await?;
+        Ok(request
+            .get("metadata")
+            .and_then(|m| m.get("deployment_verification"))
+            .and_then(Value::as_bool)
+            == Some(true))
     }
 
     /// Spawn the background reaper that stops sandboxes whose total lifetime
@@ -3292,10 +3345,11 @@ impl SessionRuntime {
 
             // Warm sandboxes are pre-booted per harness and repo-cache
             // access; any other session needs a cold sandbox.
+            let deployment = self.execution_uses_deployment_reserve(execution_id).await?;
             let warm_pool = self
                 .warm_pools
                 .as_ref()
-                .filter(|pools| boot_mode.uses_warm_pool() && !pools.keys.is_empty())
+                .filter(|pools| !deployment && boot_mode.uses_warm_pool() && !pools.keys.is_empty())
                 .and_then(|pools| {
                     if persona_context.is_some() {
                         record_sandbox_warm_pool_claim("persona_specific");
@@ -3400,6 +3454,9 @@ impl SessionRuntime {
                 spec.iron_control_principal = Some(principal.to_owned());
                 spec.iron_control_requester_principal = requester_principal.map(ToOwned::to_owned);
                 spec.iron_control_proxy_labels = proxy_labels.clone();
+            }
+            if deployment {
+                spec.labels.insert("centaur.dev/deployment-verification".to_owned(), "true".to_owned());
             }
             apply_sandbox_boot_mode(&mut spec, &boot_mode);
             apply_sandbox_capabilities(&mut spec, desired_capabilities);
@@ -11371,6 +11428,21 @@ mod adoption_tests {
         }
     }
 
+    #[test]
+    fn deployment_capacity_is_reserved_and_bounded() {
+        let config = SandboxCapacityConfig {
+            max_running: 4,
+            deployment_reserved: 1,
+        };
+        assert_eq!(config.rejection(4, 0, false), Some((4, 4)));
+        assert_eq!(config.rejection(4, 0, true), None);
+        assert_eq!(config.rejection(3, 1, false), None);
+        assert_eq!(config.rejection(3, 1, true), Some((1, 1)));
+        assert_eq!(config.rejection(4, 1, false), Some((5, 5)));
+        assert_eq!(config.rejection(4, 1, true), Some((5, 5)));
+        assert_eq!(config.rejection(0, 0, false), None);
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn running_limit_rejects_without_mutating_existing_sandboxes() {
         let Some(store) = test_store().await else {
@@ -11385,16 +11457,25 @@ mod adoption_tests {
         let controller = SandboxCapacityController::new(
             store,
             Arc::new(SandboxManager::new(backend.clone())),
-            SandboxCapacityConfig { max_running: 2 },
+            SandboxCapacityConfig {
+                max_running: 2,
+                deployment_reserved: 0,
+            },
         );
         let trigger_thread = ThreadKey::parse("test:capacity-trigger").unwrap();
         let action_ran = AtomicBool::new(false);
 
         let error = controller
-            .run_with_capacity(&trigger_thread, "exe-trigger", "cold_create", || async {
-                action_ran.store(true, Ordering::SeqCst);
-                Ok(())
-            })
+            .run_with_capacity(
+                &trigger_thread,
+                "exe-trigger",
+                "cold_create",
+                false,
+                || async {
+                    action_ran.store(true, Ordering::SeqCst);
+                    Ok(())
+                },
+            )
             .await
             .expect_err("reject at observed limit");
 
@@ -11437,13 +11518,16 @@ mod adoption_tests {
         let controller = SandboxCapacityController::new(
             store.clone(),
             Arc::new(SandboxManager::new(backend)),
-            SandboxCapacityConfig { max_running: 2 },
+            SandboxCapacityConfig {
+                max_running: 2,
+                deployment_reserved: 0,
+            },
         );
         let trigger_thread = ThreadKey::parse("test:capacity-trigger").unwrap();
         let action_ran = AtomicBool::new(false);
 
         controller
-            .run_with_capacity(&trigger_thread, "exe-trigger", "resume", || async {
+            .run_with_capacity(&trigger_thread, "exe-trigger", "resume", false, || async {
                 action_ran.store(true, Ordering::SeqCst);
                 Ok(())
             })

@@ -120,3 +120,20 @@ and does not protect against.
 | Workflow worker restarts | Re-run the handler and skip completed checkpoints. |
 | Proxy restarts | Rebuild the key-injection map from the secret-manager cache. |
 | Tool changes | api-rs reloads plugin metadata; new or refreshed sandboxes install updated CLI shims. |
+
+
+### Deployment sandbox capacity
+
+`apiRs.sandboxRunningLimit` bounds ordinary running session sandboxes.
+`apiRs.sandboxDeploymentReserved` adds separate on-demand slots for deployment
+verification. With values 4 and 1, ordinary sessions can occupy four sandboxes
+while one verification sandbox can run alongside them. The reservation does not
+keep a pod running or reserve node memory.
+
+Only an admin-authenticated execute request may retain
+`metadata.deployment_verification: true`. Ingress, Console, principal and API-client
+requests have this marker removed. Verification uses a fresh session, skips warm
+pools, labels its sandbox for capacity accounting, and releases it when complete.
+The limit remains a best-effort gate in one API process; Kubernetes enforces node
+resource availability. Keep the warm-pool target at zero when reserving capacity
+without idle pods.

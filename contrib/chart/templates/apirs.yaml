@@ -348,6 +348,8 @@ spec:
 {{- end }}
             - name: SESSION_SANDBOX_WARM_POOL_REPLENISH_INTERVAL_SECS
               value: {{ .Values.apiRs.sandboxWarmPoolReplenishIntervalSecs | quote }}
+            - name: SESSION_SANDBOX_DEPLOYMENT_RESERVED
+              value: {{ .Values.apiRs.sandboxDeploymentReserved | quote }}
             - name: SESSION_SANDBOX_RUNNING_LIMIT
               value: {{ .Values.apiRs.sandboxRunningLimit | quote }}
             - name: SESSION_SANDBOX_MAX_LIFETIME_SECS

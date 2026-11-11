@@ -427,6 +427,7 @@ async fn metrics(State(state): State<AppState>) -> Response {
 enum RouteAccess {
     Capability(Capability),
     PrincipalOnly,
+    WorkflowStart,
     /// Session write access, held by an API client (confined to its own
     /// namespace) or an operator; ingress keys are excluded.
     ApiClientOrOperatorSessionWrite,
@@ -480,6 +481,11 @@ async fn authorize_api_request(
 
     let allowed = match access {
         RouteAccess::Capability(capability) => caller.has_capability(capability),
+        RouteAccess::WorkflowStart => {
+            caller.has_capability(Capability::WorkflowsWrite)
+                || (caller.class() == CallerClass::Ingress
+                    && caller.has_capability(Capability::SlackWorkflowStart))
+        }
         RouteAccess::PrincipalOnly => caller.class() == CallerClass::Principal,
         RouteAccess::ApiClientOrOperatorSessionWrite => {
             caller.has_capability(Capability::SessionsWrite)
@@ -583,8 +589,8 @@ fn route_access(method: &Method, route: &str) -> Option<RouteAccess> {
         | (&Method::GET, "/api/workflows/schedules")
         | (&Method::GET, "/api/workflows/runs")
         | (&Method::GET, "/api/workflows/runs/{run_id}") => capability(Capability::WorkflowsRead),
-        (&Method::POST, "/api/workflows/runs")
-        | (&Method::POST, "/api/workflows/runs/{run_id}/cancel") => {
+        (&Method::POST, "/api/workflows/runs") => Some(RouteAccess::WorkflowStart),
+        (&Method::POST, "/api/workflows/runs/{run_id}/cancel") => {
             capability(Capability::WorkflowsWrite)
         }
         (&Method::POST, "/api/workflows/events") => capability(Capability::WorkflowsEvents),
@@ -1064,9 +1070,12 @@ fn principal_subject_owns_session(subject: Option<&str>, session_principal: Opti
 
 /// A workflow that declares `WORKFLOW_STARTERS` may only be started through
 /// the API by those caller classes; undeclared workflows accept any caller
-/// with workflow write access.
+/// with workflow write access, but ingress requires an explicit declaration.
 fn caller_may_start_workflow(starters: Option<&BTreeSet<String>>, caller: CallerClass) -> bool {
-    starters.is_none_or(|starters| starters.contains(caller.as_str()))
+    match starters {
+        Some(starters) => starters.contains(caller.as_str()),
+        None => caller != CallerClass::Ingress,
+    }
 }
 
 #[cfg(test)]
@@ -1101,6 +1110,12 @@ mod session_authorization_tests {
             CallerClass::Console
         ));
         assert!(caller_may_start_workflow(None, CallerClass::Principal));
+        assert!(!caller_may_start_workflow(None, CallerClass::Ingress));
+        let ingress_enabled = BTreeSet::from(["ingress".to_owned()]);
+        assert!(caller_may_start_workflow(
+            Some(&ingress_enabled),
+            CallerClass::Ingress
+        ));
     }
 
     #[test]

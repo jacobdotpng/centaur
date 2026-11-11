@@ -466,6 +466,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn slack_ingress_can_start_but_not_read_or_cancel_workflow_runs() {
+        for (method, path, expected) in [
+            (
+                Method::POST,
+                "/api/workflows/runs",
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (Method::GET, "/api/workflows/runs", StatusCode::FORBIDDEN),
+            (
+                Method::POST,
+                "/api/workflows/runs/run-1/cancel",
+                StatusCode::FORBIDDEN,
+            ),
+        ] {
+            let response = build_router_with_app_state(AppState::unready(test_auth_with_slack()))
+                .oneshot(
+                    Request::builder()
+                        .method(&method)
+                        .uri(path)
+                        .header(header::AUTHORIZATION, "Bearer test-slackbot-key")
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(r#"{"workflow_name":"concurrent_agent_smoke"}"#))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected, "{method} {path}");
+        }
+    }
+
+    #[tokio::test]
     async fn workflow_actions_require_trusted_ingress_capability() {
         let mut message = json!({"channel": "C1", "blocks": [{"type": "actions", "elements": [{
             "type": "button", "action_id": "centaur.workflow.action:00000000-0000-0000-0000-000000000001:approve",

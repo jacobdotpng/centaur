@@ -10,6 +10,7 @@ from api.workflow_engine import WorkflowContext
 
 WORKFLOW_NAME = "concurrent_agent_smoke"
 WORKFLOW_PRINCIPAL = True
+WORKFLOW_STARTERS = {"admin", "console", "principal", "ingress"}
 AGENT_PRINCIPAL = "workflow-concurrent-agent-smoke"
 
 

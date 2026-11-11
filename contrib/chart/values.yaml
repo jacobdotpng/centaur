@@ -815,6 +815,8 @@ apiRs:
 # Chat SDK Slackbot v2. Forwards Slack events to the api-rs control plane
 # (:8080) and streams responses back. Listens on :3001.
 slackbotv2:
+  # Literal phrase rules for signed human messages; empty disables triggers.
+  workflowTriggers: []
   enabled: true
   replicaCount: 1
   image:

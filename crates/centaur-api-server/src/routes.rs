@@ -261,6 +261,7 @@ pub fn build_router_with_app_state(state: AppState) -> Router {
             get(get_slack_external_team_ids).put(replace_slack_external_team_ids),
         )
         .merge(slack_proxy_router())
+        .route("/api/workflows", get(list_workflows))
         .route("/api/workflows/schedules", get(list_workflow_schedules))
         .route(
             "/api/workflows/runs",
@@ -578,7 +579,8 @@ fn route_access(method: &Method, route: &str) -> Option<RouteAccess> {
         | (&Method::POST, "/api/session/{thread_key}/pause") => {
             capability(Capability::SandboxesDrain)
         }
-        (&Method::GET, "/api/workflows/schedules")
+        (&Method::GET, "/api/workflows")
+        | (&Method::GET, "/api/workflows/schedules")
         | (&Method::GET, "/api/workflows/runs")
         | (&Method::GET, "/api/workflows/runs/{run_id}") => capability(Capability::WorkflowsRead),
         (&Method::POST, "/api/workflows/runs")
@@ -2645,6 +2647,11 @@ async fn create_workflow_run(
     }
     let run = workflows.create_run(request).await?;
     Ok(Json(serde_json::to_value(run)?))
+}
+
+async fn list_workflows(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
+    let workflows = workflow_runtime(&state)?.catalog().await?;
+    Ok(Json(json!({"ok": true, "workflows": workflows})))
 }
 
 async fn list_workflow_runs(

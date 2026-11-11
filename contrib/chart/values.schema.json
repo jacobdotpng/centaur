@@ -589,6 +589,42 @@
     "slackbotv2": {
       "type": "object",
       "properties": {
+        "workflowTriggers": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "channel",
+              "phrase",
+              "workflow"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+              },
+              "channel": {
+                "type": "string",
+                "pattern": "^[CG][A-Z0-9]{8,}$"
+              },
+              "phrase": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "workflow": {
+                "type": "string",
+                "pattern": "^[a-zA-Z0-9_-]{1,128}$"
+              },
+              "input": {
+                "type": "object"
+              }
+            }
+          }
+        },
         "agentViewEnabled": { "type": "boolean" },
         "mcpPublicUrl": { "type": "string" },
         "responseMetadataMode": {

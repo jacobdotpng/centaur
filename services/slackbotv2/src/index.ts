@@ -30,6 +30,7 @@ import {
   type ChatSDKStreamChunk,
   type RendererEvent
 } from '@centaur/rendering'
+import { dispatchWorkflowMessage, parseWorkflowTriggers } from './workflow-triggers'
 import { conflateChatSdkStream } from './conflate'
 import { CitationTextFilter, stripUnresolvedCitations } from './citation-text'
 import { observeSeconds, slackbotMetrics } from './metrics'
@@ -42,7 +43,6 @@ import { slackUserIdForMessage } from './slack-user'
 import {
   collectInitialContext,
   dispatchSlackBlockAction,
-  dispatchConcurrentSmokeMessage,
   fetchWithTimeout,
   forwardToSessionApi,
   harnessRestartPreamble,
@@ -351,6 +351,7 @@ function stickyOverrideRaw(
 }
 
 export function createSlackbotV2(options: SlackbotV2Options): SlackbotV2 {
+  const workflowTriggers = parseWorkflowTriggers(process.env.SLACKBOTV2_WORKFLOW_TRIGGERS ?? '[]')
   const userName = options.userName ?? 'centaur'
   const logger = options.logger ?? noopLogger
   const slack = createSlackAdapter({
@@ -685,7 +686,7 @@ export function createSlackbotV2(options: SlackbotV2Options): SlackbotV2 {
       }
       const interaction = parseSlackWebhookPayload(rawBody)
       // Persist before acknowledging so transient failures can be retried by Slack.
-      if (await dispatchConcurrentSmokeMessage(options, interaction)) {
+      if (await dispatchWorkflowMessage(options, interaction, workflowTriggers)) {
         return new globalThis.Response('ok', { status: 200 })
       }
       const workflowAction = interaction?.type === 'block_actions'

@@ -548,3 +548,13 @@ Omit `channel` and `thread_ts` to return the combined output only. A mention use
 `<@USER_ID>`; a message destination uses a channel ID, with `thread_ts` selecting
 the reply thread. A user ID is not a channel destination. Merging a PR alone
 does not prove that the workflow has been loaded or executed.
+
+To start this smoke workflow from human Slack messages, set
+`slackbotv2.extraEnv.SLACKBOTV2_CONCURRENT_SMOKE_CHANNEL` to the target channel
+ID and deploy Slackbot v2. The trigger is disabled when unset. In that channel,
+messages containing the phrase `centaur gay` (case insensitive, word boundaries)
+start the workflow and reply in the message's thread, mentioning its author.
+Bot messages and message edits are ignored. Slack must deliver channel message
+events to the app; the bot must be a member of the channel. Signature and ingress
+policy checks apply before matching. Retries and matching `app_mention` events
+share a durable idempotency key based on channel and message timestamp.

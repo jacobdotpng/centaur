@@ -565,6 +565,44 @@ export async function forwardToSessionApi(
   return openSessionEventStream(options, input)
 }
 
+/** Called only after Slack signature verification and ingress policy checks. */
+export async function dispatchConcurrentSmokeMessage(
+  options: SlackbotV2Options,
+  payload: Record<string, unknown> | null,
+  channel = process.env.SLACKBOTV2_CONCURRENT_SMOKE_CHANNEL
+): Promise<boolean> {
+  const event = payload?.event
+  if (!channel || !isJsonObject(event) || payload?.type !== 'event_callback'
+    || !['message', 'app_mention'].includes(String(event.type))
+    || event.channel !== channel || event.user === options.botUserId || event.subtype || event.bot_id || event.bot_profile
+    || typeof event.user !== 'string' || !/^[UW][A-Z0-9]{8,}$/.test(event.user)
+    || typeof event.ts !== 'string' || typeof event.text !== 'string'
+    || !/\bcentaur gay\b/i.test(event.text)) return false
+  const action = 'start concurrent smoke from Slack message'
+  const response = await fetchWithTimeout(
+    options.fetch ?? globalThis.fetch,
+    new URL('/api/workflows/runs', ensureTrailingSlash(options.apiUrl)),
+    {
+      method: 'POST',
+      headers: apiHeaders(options),
+      body: JSON.stringify({
+        workflow_name: 'concurrent_agent_smoke',
+        idempotency_key: `slack.concurrent-smoke:${channel}:${event.ts}`,
+        input: {
+          slack_user_id: event.user,
+          channel,
+          thread_ts: typeof event.thread_ts === 'string' ? event.thread_ts : event.ts
+        }
+      })
+    },
+    sessionApiTimeoutMs(options),
+    action
+  )
+  await ensureApiOk(response, action)
+  await response.body?.cancel()
+  return true
+}
+
 export const WORKFLOW_ACTION_PREFIX = 'centaur.workflow.action:'
 /** Emitted by api-rs once a follow-up message reaches an active execution. */
 export const SESSION_STEERING_DELIVERED_EVENT = 'session.steering_delivered'

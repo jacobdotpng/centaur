@@ -339,3 +339,55 @@ export function buildSlackResponseContextBlock(params: {
     elements: [{ type: 'mrkdwn', text: segments.join(' · ') }]
   }
 }
+
+/** Quota windows come from Codex, never from token-count estimates. */
+export function codexUsageRemaining(rateLimits: unknown): string[] {
+  if (!rateLimits || typeof rateLimits !== 'object') return []
+  const limits = rateLimits as Record<string, unknown>
+  // Other limit IDs can represent separate model quotas; don't mislabel them.
+  if (limits.limitId && limits.limitId !== 'codex') return []
+  const result: string[] = []
+  for (const name of ['primary', 'secondary']) {
+    const window = limits[name]
+    if (!window || typeof window !== 'object') continue
+    const { usedPercent, windowDurationMins } = window as Record<string, unknown>
+    if (typeof usedPercent !== 'number' || !Number.isFinite(usedPercent) ||
+        typeof windowDurationMins !== 'number' || !Number.isFinite(windowDurationMins) ||
+        windowDurationMins <= 0) continue
+    const label = windowDurationMins === 10080 ? 'Weekly'
+      : windowDurationMins === 43200 ? 'Monthly'
+      : windowDurationMins % 1440 === 0 ? `${windowDurationMins / 1440}d`
+      : windowDurationMins % 60 === 0 ? `${windowDurationMins / 60}h`
+      : `${windowDurationMins}m`
+    result.push(`${label} ${Math.round(Math.max(0, Math.min(100, 100 - usedPercent)))}% remaining`)
+  }
+  return result
+}
+
+/** Consume account events without rendering them as tool output. Mutate the
+ * block shared with stopBlocks so the footer uses the last update of this turn.
+ * No quota is cached across turns or accounts. */
+export async function* withCodexUsageFooter<T>(
+  stream: AsyncIterable<T>, block?: SlackContextBlock
+): AsyncIterable<T> {
+  const base = block?.elements[0]?.text
+  for await (const event of stream) {
+    let value: unknown = event
+    if (value && typeof value === 'object' && 'data' in value) value = value.data
+    if (value && typeof value === 'object' && 'raw' in value) value = value.raw
+    if (typeof value === 'string') {
+      try { value = JSON.parse(value) } catch { /* Non-JSON output passes through. */ }
+    }
+    if (value && typeof value === 'object' && 'method' in value &&
+        value.method === 'account/rateLimits/updated') {
+      const params = 'params' in value ? value.params : undefined
+      const limits = params && typeof params === 'object' && 'rateLimits' in params
+        ? params.rateLimits : undefined
+      if (block && base) {
+        block.elements[0]!.text = [base, ...codexUsageRemaining(limits)].join(' · ')
+      }
+      continue
+    }
+    yield event
+  }
+}

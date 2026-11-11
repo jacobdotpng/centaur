@@ -740,7 +740,7 @@ impl CodexJsonRpcChild {
                 }
                 return Ok(result);
             }
-            if notification_method(&value).is_some() && !is_dropped_notification(&value) {
+            if notification_method(&value).is_some() {
                 notifications.push(value);
             }
         }
@@ -1068,11 +1068,6 @@ fn streams_turn_output(method: &str) -> bool {
     method.starts_with("item/") || method == "thread/tokenUsage/updated"
 }
 
-/// Notifications known to be unused by harness consumers.
-fn is_dropped_notification(value: &Value) -> bool {
-    notification_method(value) == Some("account/rateLimits/updated")
-}
-
 fn is_server_request(value: &Value) -> bool {
     value.get("id").is_some() && value.get("method").is_some()
 }
@@ -1341,13 +1336,19 @@ mod tests {
     }
 
     #[test]
-    fn drops_only_the_rate_limits_notification() {
-        assert!(is_dropped_notification(&rate_limits_updated()));
-        assert!(!is_dropped_notification(&turn_started()));
-        assert!(!is_dropped_notification(&json!({
-            "method": "some/future/codexMethod",
-            "params": {}
-        })));
+    fn forwards_account_limits_without_marking_turn_progress() {
+        let event = rate_limits_updated();
+        assert!(notification_matches_scope(
+            &event,
+            Some("thread"),
+            Some("turn")
+        ));
+        let mut guard = TurnGuard::default();
+        match guard.observe(event.clone(), false) {
+            GuardStep::Forward(values) => assert_eq!(values, vec![event]),
+            _ => panic!("rate limits must be forwarded"),
+        }
+        assert!(!guard.streamed);
     }
 
     #[test]

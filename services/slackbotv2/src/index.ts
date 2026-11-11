@@ -62,6 +62,7 @@ import {
 } from './session-api'
 import {
   buildSlackResponseContextBlock,
+  withCodexUsageFooter,
   defaultModelForHarness,
   defaultServiceTierForHarness,
   effectiveReasoningForHarness,
@@ -3255,6 +3256,7 @@ async function renderExecutionStream(
   assistantStatusVisible = false,
   responseContextBlock?: SlackContextBlock
 ): Promise<{ diverged: boolean; messageId?: string }> {
+  stream = withCodexUsageFooter(stream, responseContextBlock)
   const promptText = slackMessagePromptText(message)
   if (isPlainTextOnlyRequest(promptText)) {
     await renderPlainTextExecutionStream(
@@ -3333,6 +3335,7 @@ async function renderRecoveredExecutionStream(
   options: SlackbotV2Options,
   trace?: SlackbotV2Trace
 ): Promise<{ diverged: boolean; messageId?: string }> {
+  stream = withCodexUsageFooter(stream)
   const promptText = slackMessagePromptText(message)
   if (isPlainTextOnlyRequest(promptText)) {
     await renderPlainTextExecutionStream(thread, stream, message, options, trace)

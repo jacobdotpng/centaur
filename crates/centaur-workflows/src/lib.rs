@@ -10,8 +10,8 @@ use std::{
 
 use absurd::{
     AwaitEventOptions, Client, ClientOptions, CreateQueueOptions, RetryKind, RetryStrategy,
-    SpawnOptions, StepHandle, TaskContext, TaskRegistrationOptions, TaskResultState,
-    TaskTerminalOutcome, Worker, WorkerOptions,
+    SpawnOptions, StepHandle, TaskContext, TaskRegistrationOptions, TaskResultSnapshot,
+    TaskResultState, TaskTerminalOutcome, Worker, WorkerOptions,
 };
 use centaur_iron_control::{IronControlClient, IronControlError, PrincipalInput, slugify};
 use centaur_sandbox_core::SandboxSpec;
@@ -3580,6 +3580,13 @@ async fn handle_python_context_request(
                 Err(error) => Err(error.to_string()),
             }
         }
+        Some("ctx.workflow.run") => {
+            match run_python_child_workflow(message, ctx, input, workflow_clients).await {
+                Ok(value) => Ok(value),
+                Err(WorkflowRuntimeError::Suspend) => return Err(WorkflowRuntimeError::Suspend),
+                Err(error) => Err(error.to_string()),
+            }
+        }
         Some("ctx.call_tool") => match call_python_workflow_tool(message).await {
             Ok(value) => Ok(value),
             Err(error) => Err(error.to_string()),
@@ -3615,6 +3622,83 @@ async fn handle_python_context_request(
             "error": error,
         }),
     })
+}
+
+async fn run_python_child_workflow(
+    message: &Value,
+    ctx: &TaskContext,
+    input: &WorkflowTaskInput,
+    workflow_clients: &WorkflowQueueClients,
+) -> Result<Value, WorkflowRuntimeError> {
+    let step = required_python_string(message, "step", "ctx.workflow.run")?;
+    let handle = ctx.begin_step::<Value>(step).await?;
+    if handle.done {
+        return Ok(handle.state.unwrap_or(Value::Null));
+    }
+    let mut start = message.clone();
+    start["idempotency_key"] = json!(format!(
+        "workflow-child:{}:{}",
+        ctx.task_id(),
+        handle.checkpoint_name
+    ));
+    let child = start_python_child_workflow(&start, input, workflow_clients).await?;
+    let workflow = required_python_string(&child, "workflow_name", "child workflow")?;
+    let client = match workflow_queue_class(workflow) {
+        WorkflowQueueClass::Standard => &workflow_clients.standard,
+        WorkflowQueueClass::SlackLive => &workflow_clients.slack_live,
+        WorkflowQueueClass::Etl => &workflow_clients.etl,
+        WorkflowQueueClass::EtlBackfill => &workflow_clients.etl_backfill,
+    };
+    let task_id = required_python_string(&child, "task_id", "child workflow")?;
+    // Sleep checkpoints release the worker and survive host restarts.
+    // The child key is scoped to the parent task, including its retries.
+    for poll in 0..=480 {
+        if let Some(snapshot) = client.fetch_task_result(task_id, None).await? {
+            if snapshot.is_terminal() {
+                let value = child_workflow_result(&child, snapshot)?;
+                return Ok(ctx.complete_step(handle, value).await?);
+            }
+        }
+        if poll < 480 {
+            match ctx
+                .sleep_for(
+                    &format!("{}.poll.{poll}", handle.checkpoint_name),
+                    Duration::from_secs(15),
+                )
+                .await
+            {
+                Ok(()) => {}
+                Err(absurd::Error::Suspend) => return Err(WorkflowRuntimeError::Suspend),
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+    Err(WorkflowRuntimeError::Upstream(format!(
+        "Child workflow {task_id} timed out; it has not been cancelled"
+    )))
+}
+
+fn child_workflow_result(
+    child: &Value,
+    snapshot: TaskResultSnapshot,
+) -> Result<Value, WorkflowRuntimeError> {
+    match snapshot {
+        TaskResultSnapshot::Completed { result } => {
+            let output = result.get("output").ok_or_else(|| {
+                WorkflowRuntimeError::Upstream(
+                    "Completed child is missing workflow output".to_owned(),
+                )
+            })?;
+            Ok(json!({
+                "run_id": child["run_id"], "task_id": child["task_id"],
+                "result": output,
+            }))
+        }
+        other => Err(WorkflowRuntimeError::BadRequest(format!(
+            "Child workflow {} did not complete: {other:?}",
+            child["task_id"]
+        ))),
+    }
 }
 
 async fn start_python_child_workflow(
@@ -5939,6 +6023,38 @@ mod tests {
             state: TaskResultState::Sleeping,
         };
         assert_eq!(terminal_workflow_metric(&non_terminal), None);
+    }
+
+    #[test]
+    fn child_workflow_requires_successful_terminal_output() {
+        let child = json!({"run_id": "run-child", "task_id": "task-child"});
+        let result = child_workflow_result(
+            &child,
+            TaskResultSnapshot::Completed {
+                result: json!({"workflow_name": "review", "output": {"status": "clean"}}),
+            },
+        )
+        .unwrap();
+        assert_eq!(result["result"]["status"], "clean");
+        assert_eq!(result["run_id"], "run-child");
+        for snapshot in [
+            TaskResultSnapshot::Cancelled,
+            TaskResultSnapshot::Failed {
+                failure: json!("failed"),
+            },
+            TaskResultSnapshot::Running,
+        ] {
+            assert!(child_workflow_result(&child, snapshot).is_err());
+        }
+        assert!(
+            child_workflow_result(
+                &child,
+                TaskResultSnapshot::Completed {
+                    result: json!({"status": "clean"}),
+                }
+            )
+            .is_err()
+        );
     }
 
     #[test]

@@ -202,6 +202,19 @@ class WorkflowContext:
             request["idempotency_key"] = idempotency_key
         return await self._rpc.request(request)
 
+    async def run_workflow(
+        self, name: str, workflow_name: str, input: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Start one durable child per named step and suspend until its terminal result.
+
+        Failed/cancelled children raise; timeout after two hours leaves the child
+        inspectable. Parent cancellation does not cancel the child.
+        """
+        return await self._rpc.request({
+            "type": "ctx.workflow.run", "step": name,
+            "workflow_name": workflow_name, "input": input or {},
+        })
+
     async def slack_buttons(
         self, name: str, *, channel: str, text: str, workflow: str,
         buttons: dict[str, str | Button], input: dict[str, Any] | None = None,

@@ -34,6 +34,8 @@ vlogs query 'level:error AND event:tool_call_completed' --limit 20
 
 ## Metrics
 
+For deployment verification, prefer the deployment-specific read-only diagnostics API if the sandbox overlay documents one. Use the metrics queries below when that deployment has no such endpoint.
+
 ```bash
 centaur-tools call vmetrics query '{"expr":"centaur_deployment_info"}'                 # component, version, git_sha, image
 centaur-tools call vmetrics query '{"expr":"centaur_last_deploy_timestamp_seconds"}'   # last deploy per component

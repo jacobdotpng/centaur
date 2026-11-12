@@ -67,6 +67,22 @@ class FullSendTests(unittest.TestCase):
             ctx.step.assert_not_awaited()
             ctx.run_workflow.assert_not_awaited()
 
+    def test_diagnostics_only_checks_access_without_shipping(self):
+        verified = {"status": "verified", "deployment_revision": SHA,
+                    "deployment": True, "pipelines": True, "health": True, "logs": True}
+        ctx = context([verified])
+        self.assertEqual(asyncio.run(handler(inputs(diagnostics_only=True), ctx)), verified)
+        self.assertEqual(ctx.agent_turn.await_count, 1)
+        ctx.post_to_slack.assert_not_awaited()
+        ctx.run_workflow.assert_not_awaited()
+
+    def test_diagnostics_only_rejects_missing_live_evidence(self):
+        ctx = context([{"status": "verified", "deployment_revision": SHA}])
+        with self.assertRaisesRegex(RuntimeError, "diagnostics"):
+            asyncio.run(handler(inputs(diagnostics_only=True), ctx))
+        ctx.post_to_slack.assert_not_awaited()
+        ctx.run_workflow.assert_not_awaited()
+
     def test_real_named_child_result_and_replay(self):
         ctx = context([{"pr_url": PR}, {"head_sha": SHA, "checks_green": True}, shipped()])
         first = asyncio.run(handler(inputs(), ctx))

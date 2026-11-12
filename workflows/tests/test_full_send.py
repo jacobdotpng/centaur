@@ -73,6 +73,8 @@ class FullSendTests(unittest.TestCase):
         ctx = context([verified])
         self.assertEqual(asyncio.run(handler(inputs(diagnostics_only=True), ctx)), verified)
         self.assertEqual(ctx.agent_turn.await_count, 1)
+        for path in ("/v1/deployment", "/v1/pipelines?repo=source", "/v1/pipelines?repo=config"):
+            self.assertIn(path, ctx.agent_turn.call_args.args[0])
         ctx.post_to_slack.assert_not_awaited()
         ctx.run_workflow.assert_not_awaited()
 
@@ -83,6 +85,8 @@ class FullSendTests(unittest.TestCase):
             asyncio.run(handler(inputs(), ctx))
         for call in ctx.agent_turn.await_args_list:
             self.assertIn(f"diagnostics API at {endpoint}", call.args[0])
+            for path in ("/v1/deployment", "/v1/pipelines?repo=source", "/v1/pipelines?repo=config"):
+                self.assertIn(path, call.args[0])
 
     def test_diagnostics_only_rejects_missing_live_evidence(self):
         ctx = context([{"status": "verified", "deployment_revision": SHA}])

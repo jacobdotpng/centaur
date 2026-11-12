@@ -3652,12 +3652,19 @@ async fn run_python_child_workflow(
     let task_id = required_python_string(&child, "task_id", "child workflow")?;
     // Sleep checkpoints release the worker and survive host restarts.
     // The child key is scoped to the parent task, including its retries.
+    // Checkpoint each observation so replay does not query the child again for
+    // every elapsed poll before reaching the next sleep.
     for poll in 0..=480 {
-        if let Some(snapshot) = client.fetch_task_result(task_id, None).await? {
-            if snapshot.is_terminal() {
-                let value = child_workflow_result(&child, snapshot)?;
-                return Ok(ctx.complete_step(handle, value).await?);
-            }
+        let snapshot = ctx
+            .step(&format!("{}.result.{poll}", handle.checkpoint_name), || {
+                client.fetch_task_result(task_id, None)
+            })
+            .await?;
+        if let Some(snapshot) = snapshot
+            && snapshot.is_terminal()
+        {
+            let value = child_workflow_result(&child, snapshot)?;
+            return Ok(ctx.complete_step(handle, value).await?);
         }
         if poll < 480 {
             match ctx

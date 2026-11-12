@@ -156,6 +156,15 @@ async handler. Use durable context primitives for side effects, sleeps, events,
 child workflows, agents, and tools; do not add process-local durability. Keep
 step names stable and test replay behavior after failures or restarts.
 
+New workflow implementation PRs in the configured source repository also need a
+companion activation PR in the deployment configuration repository. Inspect its
+manifest, channel admission and principal reconciliation first. Link both PRs in
+the originating thread. The activation description must link the implementation
+PR and state that enablement depends on its deployment first. Use
+`centaur-workflows creation-plan` when targeting its supported deployment; preserve
+channel overrides and grant only required workflow capabilities. Review and test
+both PRs, verify implementation deployment, then deploy activation.
+
 For a credentialed tool change, trace the complete path: tool declaration ->
 principal/role grant -> proxy configuration -> controlled request from a real
 sandbox. Configuration presence alone does not prove usable or appropriately

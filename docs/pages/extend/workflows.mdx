@@ -30,6 +30,29 @@ container. Workflow-host sandboxes receive the same ordered list translated to
 `/home/agent/github/...`. Files in those directories are loaded the same way as
 built-in workflows; sources without the directory are skipped.
 
+## Pair implementation and activation
+
+A new workflow needs both an implementation PR and a deployment configuration
+PR. Inspect the deployment's activation manifest, admitted-channel access and
+managed workflow principal grants before preparing the configuration. Enable
+through the global workflow allowlist so existing and future admitted channels
+can use it; preserve explicit access overrides and unrelated grants. Automatic
+Slack triggers are a separate opt-in feature.
+
+For the deployment supported by `centaur-workflows creation-plan`, run
+`centaur-workflows creation-plan --help` and provide the local activation
+manifest, workflow name, implementation PR URL and requester. Select only the
+capabilities the workflow needs. The command prints a proposed manifest and PR
+body without writing files or changing remote state. Validate the proposed
+manifest with the configuration repository's own checks before opening the PR.
+
+Search for existing PRs before creating either. The companion description must
+link the implementation PR and explicitly say enablement depends on that PR
+deploying first. Link both PR URLs in the originating Slack thread. Review both
+exact heads and pass required CI. Publish, deploy and verify the implementation
+first, then merge and deploy enablement. Verify the live catalog, dedicated
+principal binding and admitted-channel access before reporting availability.
+
 ## Define a workflow
 
 Each workflow file exports `WORKFLOW_NAME` and an async `handler(params, ctx)`.

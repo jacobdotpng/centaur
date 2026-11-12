@@ -60,6 +60,7 @@ Supported v2 primitives:
 | `ctx.step(name, fn)` | Supported |
 | `ctx.agent_turn(...)` / `ctx.run_agent(...)` | Supported |
 | `ctx.run_agents(...)` | Supported for bounded concurrent agent turns with ordered outcomes |
+| `ctx.run_workflow(name, workflow_name, input)` | Start an idempotent child and durably wait for its completed output; failed/cancelled children raise |
 | `ctx.call_tool(...)` | Supported through the generated `centaur-tools call` bridge in the workflow-host sandbox |
 | `ctx.post_to_slack(...)` | Supported |
 | `ctx._pool` | Supported when the workflow-host sandbox receives `DATABASE_URL` |

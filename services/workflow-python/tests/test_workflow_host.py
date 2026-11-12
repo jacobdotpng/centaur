@@ -79,6 +79,8 @@ class RequestRpc(FakeRpc):
                 "succeeded": len(payload["agents"]),
                 "failed": 0,
             }
+        if message_type == "ctx.workflow.run":
+            return {"run_id": "run-child", "task_id": "task-child", "result": {"status": "clean"}}
         if message_type == "ctx.workflow.start":
             return {
                 "workflow_name": payload["workflow_name"],
@@ -434,6 +436,37 @@ class WorkflowHostTests(unittest.TestCase):
                 }
             ],
         )
+
+    def test_run_workflow_waits_for_named_child_result(self) -> None:
+        host = load_workflow_host()
+        rpc = RequestRpc()
+        ctx = host.WorkflowContext(rpc, run_id="run-1", task_id="task-1", workflow_name="full_send")
+        result = asyncio.run(ctx.run_workflow("review_0", "agentic_review", {"pr_url": "example"}))
+        self.assertEqual(result["result"], {"status": "clean"})
+        self.assertEqual(rpc.requests, [{"type": "ctx.workflow.run", "step": "review_0",
+                                       "workflow_name": "agentic_review", "input": {"pr_url": "example"}}])
+
+    def test_child_result_round_trips_through_host_process(self) -> None:
+        source = """WORKFLOW_NAME = 'parent'
+async def handler(inp, ctx):
+    return await ctx.run_workflow('review', 'agentic_review', inp)
+"""
+        with patch.dict(os.environ, {"DATABASE_URL": "", "WORKFLOW_ENABLE_MODE": "all"}):
+            with self.workflow_host(source) as proc:
+                self.send_host_message(proc, {
+                    "type": "workflow.start", "workflow_name": "parent",
+                    "run_id": "run-parent", "task_id": "task-parent", "input": {"pr_url": "example"},
+                })
+                request = self.read_host_message(proc)
+                self.assertEqual(request["type"], "ctx.workflow.run")
+                self.assertEqual(request["workflow_name"], "agentic_review")
+                child = {"run_id": "child", "task_id": "child-task", "result": {"status": "clean"}}
+                self.send_host_message(proc, {
+                    "type": "ctx.response", "request_id": request["request_id"], "ok": True, "value": child,
+                })
+                result = self.read_host_message(proc)
+                self.assertEqual(result["type"], "workflow.result")
+                self.assertEqual(result["result"], child)
 
     def test_post_to_slack_sends_optional_custom_identity(self) -> None:
         host = load_workflow_host()

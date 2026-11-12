@@ -93,11 +93,24 @@ agent turn runs as. Schedules, webhooks, and child workflows are not affected.
 | `ctx.sleep_until(name, when)` | Resume at a specific time. |
 | `ctx.wait_for_event(name, event_type, correlation_id)` | Wait for an external event. |
 | `ctx.start_workflow(...)` | Start a child workflow and continue immediately. |
+| `ctx.run_workflow(name, workflow_name, input)` | Start an idempotent child and durably wait for its output. |
 | `ctx.agent_turn(...)` / `ctx.run_agent(...)` / `ctx.start_agent(...)` | Run one agent turn and wait for the result. |
 | `ctx.run_agents(...)` | Run a bounded group of named agent turns concurrently and wait for every outcome. |
 
 The handler may re-execute after a restart. Put external side effects behind
 `ctx.step(...)` so completed work is not repeated.
+
+For example, call the shared review workflow rather than copying its steps:
+
+```python
+child = await ctx.run_workflow("review", "agentic_review", {"pr_url": pr_url})
+report = child["result"]
+```
+
+The result includes the child `run_id` and `task_id`. A failed or cancelled
+child raises; waiting times out after two hours. Parent cancellation or timeout
+leaves the child running. Inspect it before starting another run. Completed
+results are checkpointed, while future child runs use the deployed definition.
 
 These primitives compose into larger automations:
 

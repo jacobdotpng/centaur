@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 import uuid
 from .client import WorkflowClient
+from .enablement import creation_plan
 
 
 def main():
@@ -23,10 +24,24 @@ def main():
     group.add_argument("--input", default="{}", help="Input JSON (never credentials)")
     group.add_argument("--input-file", type=Path)
     start.add_argument("--idempotency-key")
+    plan = commands.add_parser("creation-plan", help="Prepare companion configuration and dependency PR text for a new workflow (local only)")
+    plan.add_argument("workflow")
+    plan.add_argument("--manifest", type=Path, required=True)
+    plan.add_argument("--implementation-pr", required=True)
+    plan.add_argument("--requester", required=True)
+    for flag in ("model", "github", "workflow", "diagnostics"):
+        plan.add_argument("--" + flag + "-access", action="store_true")
     args = parser.parse_args()
     client = WorkflowClient()
     try:
-        if args.command == "list": result = client.catalog()
+        if args.command == "creation-plan":
+            result = creation_plan(
+                json.loads(args.manifest.read_text()), args.workflow,
+                args.implementation_pr, args.requester,
+                modelAccess=args.model_access, githubAccess=args.github_access,
+                workflowAccess=args.workflow_access, diagnosticsAccess=args.diagnostics_access,
+            )
+        elif args.command == "list": result = client.catalog()
         elif args.command == "runs": result = client.runs(args.workflow)
         elif args.command == "run": result = client.run(args.run_id)
         elif args.command == "wait":
@@ -39,7 +54,7 @@ def main():
         print(json.dumps(result, indent=2, default=str))
         if args.command == "wait" and result["status"] != "completed": return 1
         return 0
-    except (RuntimeError, TimeoutError, ValueError) as error:
+    except (OSError, RuntimeError, TimeoutError, ValueError) as error:
         print(str(error), file=sys.stderr)
         return 1
 

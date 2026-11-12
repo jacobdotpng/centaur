@@ -140,13 +140,53 @@ Run relevant checks, commit, push, and open one PR. Use the branch marker
 full-send-{ctx.task_id}; search live PRs for it before creating a PR on retry.
 Include the exact attribution line above in its body. Inspect the deployment
 pipeline now; report blocked if the agreed target or verification is unavailable.
-Do not merge yet. Return {{"pr_url":"https://github.com/OWNER/REPO/pull/N"}}.
+Inspect the live PR diff for newly added WORKFLOW_NAME definitions. For every new
+workflow in jacobdotpng/centaur, also open/recover a companion PR in
+jacobdotpng/centaur-config enabling it through deployment/workflows.json across
+all admitted channels. Inspect WORKFLOWS.md, existing channel access and managed
+principal grants; use centaur-workflows creation-plan for the entry and body.
+Do not broaden unrelated channel permissions or add automatic triggers. The config
+PR description must link the implementation PR and contain the explicit sentence:
+"Enablement depends on IMPLEMENTATION_PR_URL deploying first."
+Read the live config PR body back from GitHub; include it verbatim in the result.
+Do not merge either PR yet. Return {{"pr_url":"https://github.com/OWNER/REPO/pull/N",
+"new_workflows":[{{"name":"workflow_name", "config_pr_url":"https://github.com/jacobdotpng/centaur-config/pull/N",
+"config_pr_body":"live description"}}]}}. Return an empty new_workflows list
+when the diff adds no workflows. Do not omit a companion because source is not
+deployed yet: open it now and hold enablement until implementation deployment.
 """)
         pr = build.get("pr_url", "")
         if not isinstance(pr, str) or not re.fullmatch(
             re.escape(f"https://github.com/{inp.repository}/pull/") + r"[1-9]\d*", pr,
         ):
             raise RuntimeError("Build did not return a PR in the agreed repository")
+
+        # Keep the old result shape valid for other repositories.
+        # This deployment's workflow creation contract requires an explicit inventory.
+        companions = build.get("new_workflows", [] if inp.repository != "jacobdotpng/centaur" else None)
+        if not isinstance(companions, list):
+            raise RuntimeError("Build must inventory new workflows and their companion PRs")
+        seen = set()
+        for companion in companions:
+            if not isinstance(companion, dict):
+                raise RuntimeError("Invalid workflow companion")
+            name = companion.get("name")
+            url = companion.get("config_pr_url")
+            body = companion.get("config_pr_body")
+            if (
+                not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", name)
+                or name in seen or not isinstance(url, str)
+                or not re.fullmatch(r"https://github.com/jacobdotpng/centaur-config/pull/[1-9]\d*", url)
+                or not isinstance(body, str)
+                or f"Enablement depends on {pr} deploying first." not in body
+            ):
+                raise RuntimeError("New workflows require companion PRs with explicit implementation deployment dependencies")
+            seen.add(name)
+        if companions:
+            await post("workflow_prs", "Workflow implementation: " + pr + "\n" + "\n".join(
+                f"Enablement for `{c['name']}`: {c['config_pr_url']} (after implementation deployment)"
+                for c in companions
+            ))
 
         for attempt in range(3):
             await post(f"review_started_{attempt}", f"Running the shared agentic_review workflow on {pr}.")
@@ -180,6 +220,20 @@ cancelled or failed checks are not green. If no checks exist, report blocked.
                 raise RuntimeError("Required CI is not green")
 
             shipped = await turn(f"ship_{attempt}", f"""PR: {pr}
+Workflow enablement companions: {json.dumps([{k: c[k] for k in ("name", "config_pr_url")} for c in companions])}
+For every companion, re-read the live PR diff and dependency description. Verify
+all new workflows are covered and enabled across admitted channels using the
+existing allowlist and minimal dedicated principal grants. Block if anything is
+missing. The workflow has posted both URLs in the originating thread.
+Deploy and verify the implementation FIRST, using a separate image-promotion PR
+if required. Only then merge/deploy companion enablement. Run the named
+agentic_review on every companion and verify clean exact-head review and required
+CI before guarded merge, just as for downstream image-promotion PRs. Do not
+combine enablement with an earlier promotion that would activate it prematurely.
+Verify live catalog, principal binding and admitted-channel access after config
+deployment. Include companion_prs in the shipped result, with each config_pr_url
+and its live deployment_revision and evidence. Never report shipped if a
+companion is missing, unmerged, undeployed or not verified.
 Only reviewed and CI-verified head {sha} is authorized to merge.
 Query the live head and checks immediately before merging. If the head differs,
 return {{"status":"head_changed"}} without merging. Merge using gh pr merge
@@ -214,6 +268,18 @@ If you cannot verify deployment, return blocked, even if already merged.
                 or not all(isinstance(v, str) and v.strip() for v in shipped["evidence"])
             ):
                 raise RuntimeError("Shipping agent did not verify merge, deployment and acceptance criteria")
+            activated = shipped.get("companion_prs", [])
+            if companions and (
+                not isinstance(activated, list)
+                or len(activated) != len({c["config_pr_url"] for c in companions})
+                or any(not isinstance(c, dict) for c in activated)
+                or {c.get("config_pr_url") for c in activated} != {c["config_pr_url"] for c in companions}
+                or any(not isinstance(c.get("deployment_revision"), str) or not c["deployment_revision"].strip()
+                       or not isinstance(c.get("evidence"), list) or not c["evidence"]
+                       or not all(isinstance(e, str) and e.strip() for e in c["evidence"])
+                       for c in activated)
+            ):
+                raise RuntimeError("Workflow companion enablement deployment is unverified")
             result = {**shipped, "pr_url": pr, "review_run_id": child["run_id"]}
             await post("shipped", f"Full send shipped: {pr}\nRevision: {shipped['deployment_revision']}\n" + "\n".join(shipped["evidence"]))
             return result

@@ -161,3 +161,55 @@ class FullSendTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             asyncio.run(handler(inputs(), ctx))
         ctx.run_workflow.assert_not_awaited()
+
+
+class WorkflowCompanionTests(unittest.TestCase):
+    PR = 'https://github.com/jacobdotpng/centaur/pull/123'
+    CONFIG = 'https://github.com/jacobdotpng/centaur-config/pull/45'
+
+    def build(self, **changes):
+        return {'pr_url': self.PR, 'new_workflows': [{'name': 'new_workflow',
+                'config_pr_url': self.CONFIG,
+                'config_pr_body': f'Enablement depends on {self.PR} deploying first.'}], **changes}
+
+    def run_case(self, build, result=None):
+        child = review()
+        child['result']['pr_url'] = self.PR
+        ctx = context([build, {'head_sha': SHA, 'checks_green': True}, result or shipped()], [child])
+        return ctx
+
+    def test_missing_pair_or_dependency_is_rejected_before_review(self):
+        cases = [{'pr_url': self.PR}, self.build(new_workflows=None),
+                 self.build(new_workflows=[{'name': 'new_workflow', 'config_pr_url': self.CONFIG,
+                                           'config_pr_body': f'See {self.PR}'}]),
+                 self.build(new_workflows=[{'name': 'new_workflow', 'config_pr_url': PR,
+                                           'config_pr_body': f'Enablement depends on {self.PR} deploying first.'}])]
+        for build in cases:
+            ctx = self.run_case(build)
+            with self.assertRaises(RuntimeError):
+                asyncio.run(handler(inputs(repository='jacobdotpng/centaur'), ctx))
+            ctx.run_workflow.assert_not_awaited()
+
+    def test_both_links_are_delivered_once_on_replay_and_ship_requires_activation(self):
+        result = {**shipped(), 'companion_prs': [{'config_pr_url': self.CONFIG,
+                  'deployment_revision': NEW, 'evidence': ['https://config.example/deploy/1']}]}
+        ctx = self.run_case(self.build(), result)
+        first = asyncio.run(handler(inputs(repository='jacobdotpng/centaur'), ctx))
+        self.assertEqual(asyncio.run(handler(inputs(repository='jacobdotpng/centaur'), ctx)), first)
+        messages = [c for c in ctx.post_to_slack.await_args_list if 'Workflow implementation:' in c.args[1]]
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0].args[0], 'C12345678')
+        self.assertEqual(messages[0].kwargs['thread_ts'], '123.456')
+        self.assertIn(self.PR, messages[0].args[1])
+        self.assertIn(self.CONFIG, messages[0].args[1])
+        prompt = ctx.agent_turn.await_args_list[-1].args[0]
+        self.assertIn('Deploy and verify the implementation FIRST', prompt)
+        self.assertIn('agentic_review on every companion', prompt)
+
+    def test_unverified_companion_cannot_report_success(self):
+        for companions in [None, [], [{'config_pr_url': self.CONFIG}],
+                           [{'config_pr_url': self.CONFIG, 'deployment_revision': NEW, 'evidence': []}]]:
+            ctx = self.run_case(self.build(), {**shipped(), 'companion_prs': companions})
+            with self.assertRaisesRegex(RuntimeError, 'companion enablement deployment'):
+                asyncio.run(handler(inputs(repository='jacobdotpng/centaur'), ctx))
+            self.assertFalse(any('Full send shipped:' in c.args[1] for c in ctx.post_to_slack.await_args_list))

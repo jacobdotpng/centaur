@@ -14,7 +14,7 @@ sys.path.insert(
 
 from workflows.agentic_review import Input, handler
 
-PR = "https://github.com/example/project/pull/12"
+PR = "https://github.com/jacobdotpng/centaur/pull/12"
 SHA = "a" * 40
 NEW = "b" * 40
 
@@ -38,8 +38,8 @@ def context(values):
     return ctx
 
 
-CLEAN = {"head_sha": SHA, "findings": []}
-ISSUE = {"head_sha": SHA, "findings": ["app.py:12 — redundant branch obscures logic"]}
+CLEAN = {"head_repository": "jacobdotpng/centaur", "head_sha": SHA, "findings": []}
+ISSUE = {"head_repository": "jacobdotpng/centaur", "head_sha": SHA, "findings": ["app.py:12 — redundant branch obscures logic"]}
 FIX = {"head_sha": NEW, "summary": "Removed branch; unit checks passed"}
 COMMENT = {"comment_url": PR + "#issuecomment-123"}
 
@@ -80,6 +80,35 @@ class AgenticReviewTests(unittest.TestCase):
         out = asyncio.run(handler(Input(PR), ctx))
         self.assertEqual(out["status"], "unresolved")
         self.assertEqual(out["repairs"], 1)
+
+    def test_all_allowed_repositories(self):
+        for repo in ("centaur", "centaur-config", "agent-platform"):
+            pr = f"https://github.com/jacobdotpng/{repo}/pull/12"
+            ctx = context([CLEAN, {"comment_url": pr + "#issuecomment-123"}])
+            self.assertEqual(asyncio.run(handler(Input(pr), ctx))["status"], "clean")
+            self.assertIn(f"--repo jacobdotpng/{repo}", ctx.agent_turn.call_args_list[0].args[0])
+
+    def test_unrelated_public_repository_rejected_before_side_effects(self):
+        ctx = context([])
+        with self.assertRaises(ValueError):
+            asyncio.run(handler(Input("https://github.com/python/cpython/pull/12"), ctx))
+        ctx.agent_turn.assert_not_awaited()
+        ctx.step.assert_not_awaited()
+        ctx.call_tool.assert_not_awaited()
+
+    def test_out_of_list_fork_cannot_start_repair(self):
+        for head in ("outsider/centaur", None, ""):
+            ctx = context([{**ISSUE, "head_repository": head}])
+            with self.assertRaises(ValueError):
+                asyncio.run(handler(Input(PR), ctx))
+            self.assertEqual(ctx.agent_turn.await_count, 1)
+
+    def test_allowed_fork_can_start_repair(self):
+        ctx = context([{**ISSUE, "head_repository": "jacobdotpng/agent-platform"}, FIX, CLEAN, COMMENT])
+        self.assertEqual(asyncio.run(handler(Input(PR), ctx))["repairs"], 1)
+        prompt = ctx.agent_turn.call_args_list[1].args[0]
+        self.assertIn("Never push to an", prompt)
+        self.assertIn("git push remote", prompt)
 
     def test_invalid_inputs_do_not_start_agents(self):
         for inp in [Input("bad"), Input(PR, 4), Input(PR, 0), Input(PR, True)]:

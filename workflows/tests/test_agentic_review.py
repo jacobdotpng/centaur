@@ -57,6 +57,59 @@ class AgenticReviewTests(unittest.TestCase):
         self.assertEqual(args["reasoning"], "medium")
         self.assertEqual(args["principal"], "workflow-agentic-review")
 
+    def test_slack_completion_is_replay_safe(self):
+        ctx = context([CLEAN, COMMENT])
+        inp = Input(PR, channel="C12345678", thread_ts="123.456")
+        asyncio.run(handler(inp, ctx))
+        asyncio.run(handler(inp, ctx))
+        ctx.post_to_slack.assert_awaited_once()
+        args, kwargs = ctx.post_to_slack.call_args
+        self.assertEqual(args[0], inp.channel)
+        self.assertIn("clean", args[1])
+        self.assertIn(COMMENT["comment_url"], args[1])
+        self.assertEqual(kwargs["thread_ts"], inp.thread_ts)
+        self.assertEqual(kwargs["client_msg_id"], "agentic-review:run-123:completion")
+
+    def test_no_notification_without_destination(self):
+        ctx = context([CLEAN, COMMENT])
+        asyncio.run(handler(Input(PR), ctx))
+        ctx.post_to_slack.assert_not_awaited()
+
+    def test_unresolved_review_notifies(self):
+        ctx = context([ISSUE, {"head_sha": SHA, "summary": "Declined"}, COMMENT])
+        asyncio.run(handler(Input(PR, channel="C12345678", thread_ts="123.456"), ctx))
+        self.assertIn("unresolved", ctx.post_to_slack.call_args.args[1])
+
+    def test_failure_then_retry_can_deliver_completion(self):
+        ctx = context([])
+        ctx.agent_turn.side_effect = [RuntimeError("private tool details"), result(CLEAN), result(COMMENT)]
+        inp = Input(PR, channel="C12345678", thread_ts="123.456")
+        with self.assertRaisesRegex(RuntimeError, "private tool details"):
+            asyncio.run(handler(inp, ctx))
+        self.assertNotIn("private tool details", ctx.post_to_slack.call_args.args[1])
+        asyncio.run(handler(inp, ctx))
+        self.assertEqual(ctx.post_to_slack.await_count, 2)
+        self.assertIn("finished", ctx.post_to_slack.call_args.args[1])
+
+    def test_notification_failure_retries_without_rerunning_review(self):
+        ctx = context([CLEAN, COMMENT])
+        ctx.post_to_slack.side_effect = [RuntimeError("Slack unavailable"), {}]
+        inp = Input(PR, channel="C12345678", thread_ts="123.456")
+        with self.assertRaisesRegex(RuntimeError, "Slack unavailable"):
+            asyncio.run(handler(inp, ctx))
+        asyncio.run(handler(inp, ctx))
+        self.assertEqual(ctx.agent_turn.await_count, 2)
+        self.assertEqual(ctx.post_to_slack.await_count, 2)
+
+    def test_invalid_destination_rejected_before_side_effects(self):
+        for fields in [{"channel": "C123"}, {"thread_ts": "123.456"},
+                       {"channel": "U123", "thread_ts": "123.456"},
+                       {"channel": "C123", "thread_ts": "bad"}]:
+            ctx = context([])
+            with self.assertRaises(ValueError):
+                asyncio.run(handler(Input(PR, **fields), ctx))
+            ctx.step.assert_not_awaited()
+
     def test_three_repairs_then_final_review_stops_even_with_findings(self):
         ctx = context([ISSUE, FIX, ISSUE, FIX, ISSUE, FIX, ISSUE, COMMENT])
         out = asyncio.run(handler(Input(PR), ctx))

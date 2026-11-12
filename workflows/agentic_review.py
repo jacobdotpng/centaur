@@ -27,6 +27,8 @@ class Input:
     max_iterations: int = 3
     reviewer_model: str = "gpt-6.1-sol"
     reviewer_reasoning: str = "medium"
+    channel: str | None = None
+    thread_ts: str | None = None
 
 
 def answer(result: dict[str, Any]) -> dict[str, Any]:
@@ -58,6 +60,35 @@ async def handler(inp: Input, ctx: WorkflowContext) -> dict[str, Any]:
     }:
         raise ValueError("Invalid reviewer model or reasoning")
 
+    if (inp.channel is None) != (inp.thread_ts is None) or (
+        inp.channel is not None and (
+            not re.fullmatch(r"[CG][A-Z0-9]+", inp.channel)
+            or not re.fullmatch(r"[0-9]+\.[0-9]+", inp.thread_ts)
+        )
+    ):
+        raise ValueError("Slack notifications require both a channel ID and thread timestamp")
+
+    async def notify(name: str, text: str):
+        if inp.channel is not None:
+            await ctx.step(f"notify_{name}", lambda: ctx.post_to_slack(
+                inp.channel, text, thread_ts=inp.thread_ts,
+                client_msg_id=f"agentic-review:{ctx.run_id}:{name}",
+            ))
+
+    try:
+        report = await review_pr(inp, ctx, repository)
+    except Exception:
+        # Keep exception details in the run, rather than exposing tool output to Slack.
+        await notify("failure", f"Agentic Review attempt failed for {inp.pr_url}. Run `{ctx.run_id}`; inspect the run for details or retries.")
+        raise
+    await notify(
+        "completion", f"Agentic Review finished for {inp.pr_url}: {report['status']} "
+        f"after {report['repairs']} repair round(s).\n{report['comment_url']}\nRun `{ctx.run_id}`."
+    )
+    return report
+
+
+async def review_pr(inp: Input, ctx: WorkflowContext, repository: str) -> dict[str, Any]:
     async def turn(name: str, prompt: str, *, reviewer: bool = False) -> dict[str, Any]:
         async def execute():
             return await ctx.agent_turn(

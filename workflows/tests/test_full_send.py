@@ -5,7 +5,7 @@ import json
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "services" / "workflow-python"))
 
@@ -75,6 +75,14 @@ class FullSendTests(unittest.TestCase):
         self.assertEqual(ctx.agent_turn.await_count, 1)
         ctx.post_to_slack.assert_not_awaited()
         ctx.run_workflow.assert_not_awaited()
+
+    def test_operator_diagnostics_url_is_given_to_all_agent_turns(self):
+        ctx = context([{"pr_url": PR}, {"head_sha": SHA, "checks_green": True}, shipped()])
+        endpoint = "http://diagnostics.example:19876"
+        with patch.dict("os.environ", {"CENTAUR_DIAGNOSTICS_URL": endpoint}):
+            asyncio.run(handler(inputs(), ctx))
+        for call in ctx.agent_turn.await_args_list:
+            self.assertIn(f"diagnostics API at {endpoint}", call.args[0])
 
     def test_diagnostics_only_rejects_missing_live_evidence(self):
         ctx = context([{"status": "verified", "deployment_revision": SHA}])

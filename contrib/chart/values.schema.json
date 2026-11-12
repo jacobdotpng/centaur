@@ -30,6 +30,7 @@
       "properties": {
         "replicaCount": { "type": "integer" },
         "publicUrl": { "type": "string" },
+        "slackChannelReadsEnabled": { "type": "boolean" },
         "allowedHosts": {
           "type": "array",
           "items": { "type": "string" },

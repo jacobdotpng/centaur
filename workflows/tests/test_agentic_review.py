@@ -2,8 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 import unittest
+from pathlib import Path
 from unittest.mock import AsyncMock
+
+sys.path.insert(
+    0,
+    str(Path(__file__).resolve().parents[2] / "services" / "workflow-python"),
+)
 
 from workflows.agentic_review import Input, handler
 

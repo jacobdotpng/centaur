@@ -192,6 +192,43 @@ class PrincipalTest < ActiveSupport::TestCase
     assert_not principal.sandbox_workflows_write_enabled
   end
 
+  test "deployment read defaults apply only to new Slack channels and respect explicit overrides" do
+    SystemSetting.current.update!(default_sandbox_sessions_read_enabled: false, default_sandbox_workflows_read_enabled: false)
+    with_env("CENTAUR_CONSOLE_SLACK_CHANNEL_READS_ENABLED" => "true") do
+      channel = Principal.new(default_attrs(foreign_id: "slack-channel-new", kind: "slack_channel"))
+      channel.apply_default_sandbox_capabilities!
+      assert channel.sandbox_sessions_read_enabled
+      assert channel.sandbox_workflows_read_enabled
+
+      channel.sandbox_sessions_read_enabled = false
+      channel.sandbox_workflows_read_enabled = false
+      channel.apply_default_sandbox_capabilities!(sandbox_sessions_read_enabled: false, sandbox_workflows_read_enabled: false)
+      assert_not channel.sandbox_sessions_read_enabled
+      assert_not channel.sandbox_workflows_read_enabled
+
+      user = Principal.new(default_attrs(foreign_id: "user-new", kind: "user"))
+      user.apply_default_sandbox_capabilities!
+      assert_not user.sandbox_sessions_read_enabled
+      assert_not user.sandbox_workflows_read_enabled
+
+      existing = principals(:acme_channel)
+      existing.update!(sandbox_sessions_read_enabled: false, sandbox_workflows_read_enabled: false)
+      existing.apply_default_sandbox_capabilities!
+      assert_not existing.sandbox_sessions_read_enabled
+      assert_not existing.sandbox_workflows_read_enabled
+    end
+  end
+
+  test "Slack channel reads use system defaults when deployment opt-in is disabled" do
+    SystemSetting.current.update!(default_sandbox_sessions_read_enabled: false, default_sandbox_workflows_read_enabled: false)
+    with_env("CENTAUR_CONSOLE_SLACK_CHANNEL_READS_ENABLED" => "false") do
+      channel = Principal.new(default_attrs(foreign_id: "slack-channel-disabled", kind: "slack_channel"))
+      channel.apply_default_sandbox_capabilities!
+      assert_not channel.sandbox_sessions_read_enabled
+      assert_not channel.sandbox_workflows_read_enabled
+    end
+  end
+
   test "new principals with no roles receive all configured defaults" do
     Role.update_all(assign_by_default: false)
     [ roles(:acme_infra), roles(:acme_admin_role), roles(:globex_infra) ].each do |role|

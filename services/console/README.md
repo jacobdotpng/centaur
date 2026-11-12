@@ -81,6 +81,7 @@ The operator console supports email and password sign-in by default. To add Goog
 
 | Variable                              | Required | Description                                                                                 |
 | ------------------------------------- | -------- | ------------------------------------------------------------------------------------------- |
+| `CENTAUR_CONSOLE_SLACK_CHANNEL_READS_ENABLED` | optional | Set to `true` to give new Slack channel principals session and workflow reads. Enabled by default by Helm via `console.slackChannelReadsEnabled`. Existing principals, other principal kinds, and explicit per-principal overrides are unchanged. |
 | `CENTAUR_CONSOLE_PUBLIC_URL`             | recommended | Public origin for this deployment, for example `https://control.example.com`. Use this when `iron-control` runs behind a proxy or load balancer whose internal host does not match the public URL. |
 | `CENTAUR_CONSOLE_GOOGLE_CLIENT_ID`       | for Google | Google OAuth client ID for console login.                                                    |
 | `CENTAUR_CONSOLE_GOOGLE_CLIENT_SECRET`   | for Google | Google OAuth client secret for console login.                                                |

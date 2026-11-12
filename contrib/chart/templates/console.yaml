@@ -101,6 +101,8 @@ spec:
           image: {{ printf "%s:%s" $console.image.repository $console.image.tag | quote }}
           imagePullPolicy: {{ $console.image.pullPolicy }}
           env:
+            - name: CENTAUR_CONSOLE_SLACK_CHANNEL_READS_ENABLED
+              value: {{ $console.slackChannelReadsEnabled | toString | quote }}
             # Explicit secretKeyRefs only — never envFrom the shared Secret, or
             # its DATABASE_URL (ai_v2) would leak into console's env. Env
             # var names match the IRON_CONTROL_* secret keys 1:1 (except

@@ -160,6 +160,11 @@ class Principal < ApplicationRecord
     return unless new_record?
 
     defaults = SystemSetting.current.principal_defaults
+    # A deployment can opt new Slack channels into diagnostic reads without
+    # changing user/workflow defaults or capabilities on existing principals.
+    if kind == "slack_channel" && ConsoleEnv["SLACK_CHANNEL_READS_ENABLED"] == "true"
+      defaults = defaults.merge(sandbox_sessions_read_enabled: true, sandbox_workflows_read_enabled: true)
+    end
     unless supplied_key?(supplied, :sandbox_repo_cache)
       self.sandbox_repo_cache = defaults[:sandbox_repo_cache]
     end

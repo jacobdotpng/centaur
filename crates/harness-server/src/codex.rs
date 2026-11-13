@@ -8,7 +8,7 @@ use std::sync::{
     mpsc::{self, Receiver, RecvTimeoutError},
 };
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
@@ -455,8 +455,13 @@ fn run_codex_user_turn<W: Write>(
     if model_provider == "openai" {
         let id = next_request_id(request_id);
         codex.send_request(id, "account/rateLimits/read", json!({}), traceparent)?;
-        if let Ok(snapshot) = codex.read_response_or_forward(id, stdout, Some(&current_thread_id))
-            && let Some(limits) = snapshot.get("rateLimits").filter(|value| value.is_object())
+        // Quota metadata is optional: never block turn startup indefinitely.
+        if let Ok(snapshot) = codex.read_response_or_forward_until(
+            id,
+            stdout,
+            Some(&current_thread_id),
+            Some(Instant::now() + Duration::from_millis(500)),
+        ) && let Some(limits) = snapshot.get("rateLimits").filter(|value| value.is_object())
         {
             codex.citations.write_value(
                 stdout,
@@ -730,11 +735,33 @@ impl CodexJsonRpcChild {
         stdout: &mut W,
         thread_id: Option<&str>,
     ) -> Result<Value> {
+        self.read_response_or_forward_until(expected_id, stdout, thread_id, None)
+    }
+
+    fn read_response_or_forward_until<W: Write>(
+        &mut self,
+        expected_id: i64,
+        stdout: &mut W,
+        thread_id: Option<&str>,
+        deadline: Option<Instant>,
+    ) -> Result<Value> {
         // Notifications can precede the response that identifies the new thread
         // or turn. Buffer them until ownership is known, including on resume.
         let mut notifications = Vec::new();
         loop {
-            let value = self.read_value()?;
+            let value = if let Some(deadline) = deadline {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(HarnessServerError::Protocol(
+                        "Codex optional request timed out".to_owned(),
+                    ));
+                }
+                self.read_value_timeout(remaining)?.ok_or_else(|| {
+                    HarnessServerError::Protocol("Codex optional request timed out".to_owned())
+                })?
+            } else {
+                self.read_value()?
+            };
             if is_server_request(&value) {
                 self.send_error_response(&value)?;
                 continue;
@@ -920,8 +947,13 @@ impl CodexJsonRpcChild {
     }
 
     fn read_value_timeout(&mut self, timeout: Duration) -> Result<Option<Value>> {
+        let deadline = Instant::now() + timeout;
         loop {
-            let line = match self.stdout.recv_timeout(timeout) {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Ok(None);
+            }
+            let line = match self.stdout.recv_timeout(remaining) {
                 Ok(line) => line.map_err(HarnessServerError::CodexTransport)?,
                 Err(RecvTimeoutError::Timeout) => return Ok(None),
                 Err(RecvTimeoutError::Disconnected) => {

@@ -750,6 +750,30 @@ fn fake_claude_blocks_mode_interrupts_back_to_back_stop() {
 }
 
 #[test]
+fn fake_codex_blocks_mode_starts_turn_when_quota_request_never_replies() {
+    let fake_codex = temp_path("fake-codex-no-quota.sh");
+    let fake_codex_log = temp_path("fake-codex-no-quota-requests.jsonl");
+    let script = fake_codex_app_server_script(&fake_codex_log).replace(
+        r#"printf '{"id":%s,"result":{"rateLimits":{"primary":{"usedPercent":18,"windowDurationMins":300,"resetsAt":null},"secondary":{"usedPercent":36,"windowDurationMins":10080,"resetsAt":null}}}}\n' "$id""#,
+        ": # Leave the quota request unanswered",
+    );
+    assert!(script.contains(": # Leave the quota request unanswered"));
+    std::fs::write(&fake_codex, script).expect("write fake codex script");
+    let mut permissions = std::fs::metadata(&fake_codex).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&fake_codex, permissions).unwrap();
+    let mut bridge = BridgeProcess::spawn_harness_blocks(
+        Harness::Codex,
+        None,
+        Some(("CODEX_BIN", fake_codex.to_str().unwrap())),
+    );
+    let turn = bridge.run_blocks_user_turn("say codex blocks", Duration::from_secs(5));
+    bridge.finish_successfully();
+    assert_completed_turn(&turn);
+    assert_eq!(turn.text_from_deltas, "codex blocks");
+}
+
+#[test]
 fn fake_codex_blocks_mode_spawns_app_server_and_translates_user_blocks() {
     let fake_codex = temp_path("fake-codex.sh");
     let fake_codex_log = temp_path("fake-codex-requests.jsonl");

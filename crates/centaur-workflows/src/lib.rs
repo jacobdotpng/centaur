@@ -1114,6 +1114,7 @@ impl WorkflowRuntime {
                         'failed_at', failed_at, 'next_available_at', available_at,
                         'lease_expires_at', claim_expires_at, 'failure_category',
                         case when failure_reason is null then null
+                             when lower(failure_reason::text) ~ '(oomkilled|memory limit)' then 'sandbox_memory_limit'
                              when lower(failure_reason::text) ~ '(capacity|sandbox_running_limit|no sandbox slot)' then 'sandbox_capacity'
                              when lower(failure_reason::text) ~ '(claimexpired|timeout|timed out)' then 'timeout'
                              when lower(failure_reason::text) ~ '(forbidden|unauthorized|permission denied)' then 'access_denied'
@@ -4059,7 +4060,12 @@ async fn run_python_agent_turn(
         .or_else(|| args.get("execution_idempotency_key"))
         .and_then(Value::as_str)
         .map(ToOwned::to_owned)
-        .unwrap_or_else(|| format!("absurd-workflow-agent-turn:{client_message_id}"));
+        .unwrap_or_else(|| {
+            format!(
+                "absurd-workflow-agent-turn:{}:{client_message_id}",
+                ctx.run_id()
+            )
+        });
     // Optional per-turn harness knobs, mirroring the slackbot's `--model` /
     // `--bedrock` / `-rsn` flags. `reasoning` accepts `reasoning_effort` and
     // `effort` aliases so Python callers can use whichever reads best.
@@ -4833,16 +4839,10 @@ async fn run_agent_session_turn(
                 });
             }
             "session.execution_failed" | "session.execution_cancelled" => {
-                let result = AgentTurnResult {
-                    thread_key: thread_key.into_string(),
-                    execution_id: execution.execution_id,
-                    status: event.event_type,
-                    result_text: agent_turn_result_text(&event.payload, &output_lines),
-                    output_lines,
-                };
+                let category = agent_failure_category(&event.payload);
                 return Err(WorkflowRuntimeError::Upstream(format!(
-                    "agent turn {} for thread {} ended with {}",
-                    result.execution_id, result.thread_key, result.status
+                    "agent turn {} for thread {} ended with {} ({category})",
+                    execution.execution_id, thread_key, event.event_type
                 )));
             }
             _ => {}
@@ -4852,6 +4852,22 @@ async fn run_agent_session_turn(
     Err(WorkflowRuntimeError::Upstream(
         "session event stream ended before terminal execution event".to_owned(),
     ))
+}
+
+// Only publish fixed categories. Execution errors can contain private output.
+fn agent_failure_category(payload: &Value) -> &'static str {
+    let error = payload["error"].as_str().unwrap_or("").to_ascii_lowercase();
+    if error.contains("oomkilled") {
+        "sandbox exceeded its memory limit (OOMKilled)"
+    } else if error.contains("sandbox running capacity") {
+        "sandbox capacity exhausted"
+    } else if error.contains("usage limit") || error.contains("rate limit") {
+        "provider usage or rate limit"
+    } else if error.contains("timed out") || error.contains("deadline exceeded") {
+        "execution timed out"
+    } else {
+        "no recognized execution failure category"
+    }
 }
 
 fn agent_turn_result_text(terminal_payload: &Value, output_lines: &[String]) -> String {
@@ -4988,6 +5004,18 @@ pub enum WorkflowRuntimeError {
 mod tests {
     use super::*;
     use chrono::TimeZone;
+
+    #[test]
+    fn workflow_errors_preserve_oom_without_disclosing_payload() {
+        assert_eq!(
+            agent_failure_category(&json!({"error": "sandbox ended: OOMKilled; private output"})),
+            "sandbox exceeded its memory limit (OOMKilled)"
+        );
+        assert_eq!(
+            agent_failure_category(&json!({"error": "private output"})),
+            "no recognized execution failure category"
+        );
+    }
 
     async fn assert_structured_host_error_is_bounded(message_type: &str) {
         let stderr_task = tokio::spawn(async {

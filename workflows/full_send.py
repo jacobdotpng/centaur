@@ -143,7 +143,9 @@ is configured, follow this preflight: {preflight_instruction}
 This preflight checks that verification
 is available; the requested changes are not expected to be deployed yet.
 Implement the agreed scope in a writable clone using git-branch.
-Run relevant checks, commit, push, and open one PR. Use the branch marker
+Run relevant checks, commit, push, and open one PR. For Rust checks inside the
+sandbox, use CARGO_BUILD_JOBS=1. Use hosted CI for broader builds that exceed
+the sandbox memory budget, and report which checks you ran locally. Use the branch marker
 full-send-{ctx.task_id}; search live PRs for it before creating a PR on retry.
 Include the exact attribution line above in its body. Inspect the deployment
 pipeline now; report blocked if the agreed target or verification is unavailable.

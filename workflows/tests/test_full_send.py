@@ -107,6 +107,24 @@ class FullSendTests(unittest.TestCase):
         prompt = ctx.agent_turn.call_args_list[-1].args[0]
         self.assertIn(f"--match-head-commit {SHA}", prompt)
 
+    def test_retry_uses_a_fresh_shipping_sandbox_and_keeps_completed_steps(self):
+        ctx = context([{"pr_url": PR}, {"head_sha": SHA, "checks_green": True}])
+        ctx.agent_turn.side_effect = [
+            {"status": "completed", "result_text": json.dumps({"pr_url": PR})},
+            {"status": "completed", "result_text": json.dumps({"head_sha": SHA, "checks_green": True})},
+            RuntimeError("shipping lost its lease"),
+            {"status": "completed", "result_text": json.dumps(shipped())},
+        ]
+        with self.assertRaisesRegex(RuntimeError, "lost its lease"):
+            asyncio.run(handler(inputs(), ctx))
+        ctx.run_id = "run-2"
+        self.assertEqual(asyncio.run(handler(inputs(), ctx))["pr_url"], PR)
+        first, retry = ctx.agent_turn.call_args_list[-2:]
+        self.assertEqual(first.kwargs["thread_key"], "wf:run-1:full-send:ship_0")
+        self.assertEqual(retry.kwargs["thread_key"], "wf:run-2:full-send:ship_0")
+        self.assertEqual(ctx.agent_turn.await_count, 4)
+        self.assertEqual(ctx.run_workflow.await_count, 2)
+
     def test_ci_repairs_require_fresh_review(self):
         ctx = context([{"pr_url": PR}, {"head_sha": NEW, "checks_green": True},
                        {"head_sha": NEW, "checks_green": True}, shipped(NEW)],

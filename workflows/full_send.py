@@ -104,7 +104,7 @@ Return only a JSON object. Evidence must come from successful live queries.
 
     async def turn(name: str, prompt: str):
         result = object_result(await ctx.step(name, lambda: ctx.agent_turn(
-            scope + prompt, thread_key=f"wf:{ctx.task_id}:full-send:{name}",
+            scope + prompt, thread_key=f"wf:{ctx.run_id}:full-send:{name}",
             message_id=f"full-send:{ctx.task_id}:{name}",
         )))
         if result.get("status") == "blocked":

@@ -1125,6 +1125,11 @@ impl WorkflowRuntime {
                             'state', status, 'updated_at', updated_at, 'run_id', owner_run_id) entry
                         from {checkpoints} where task_id = $1::text::uuid order by updated_at desc limit 20
                     ) recent), '[]'::jsonb),
+                    'last_activity_at', (select max(activity) from (
+                        select greatest(started_at, completed_at, failed_at) activity from {runs} where task_id = $1::text::uuid
+                        union all select updated_at from {checkpoints} where task_id = $1::text::uuid
+                    ) observed),
+                    'latest_run_id', (select run_id from {runs} where task_id = $1::text::uuid order by attempt desc limit 1),
                     'initial_run_id', (select run_id from {runs} where task_id = $1::text::uuid order by attempt limit 1)
                 )"#
             ))
@@ -3579,10 +3584,20 @@ async fn handle_python_context_request(
                     "checkpoint_name": handle.checkpoint_name,
                     "value": handle.state.unwrap_or(Value::Null),
                 })),
-                Ok(handle) => Ok(json!({
-                    "done": false,
-                    "checkpoint_name": handle.checkpoint_name,
-                })),
+                Ok(handle) => {
+                    let marker = format!(
+                        "diagnostics.started.{}.{}",
+                        ctx.run_id(),
+                        handle.checkpoint_name
+                    );
+                    if let Err(error) = ctx.step(&marker, || async { Ok(()) }).await {
+                        tracing::warn!(%error, "could not record diagnostic step start");
+                    }
+                    Ok(json!({
+                        "done": false,
+                        "checkpoint_name": handle.checkpoint_name,
+                    }))
+                }
                 Err(error) => Err(error.to_string()),
             }
         }

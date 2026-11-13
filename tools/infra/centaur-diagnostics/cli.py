@@ -14,12 +14,14 @@ def main():
     pipelines = commands.add_parser("pipelines")
     pipelines.add_argument("repo", choices=("source", "config", "product"))
     pipelines.add_argument("--run-id", type=int)
+    access = commands.add_parser("repository-access")
+    access.add_argument("repository")
     release = commands.add_parser("release")
     release.add_argument("source")
     preflight = commands.add_parser("preflight")
     preflight.add_argument("--extended", action="store_true")
     args = vars(parser.parse_args())
-    command = args.pop("command")
+    command = args.pop("command").replace("-", "_")
     try:
         print(json.dumps(getattr(DiagnosticsClient(), command)(**args), indent=2))
     except (OSError, RuntimeError, ValueError) as error:

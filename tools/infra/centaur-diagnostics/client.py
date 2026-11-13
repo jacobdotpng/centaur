@@ -59,6 +59,30 @@ class DiagnosticsClient:
         """Trace a source revision through promotion and verification."""
         return self._get("release", source=source)
 
+    def repository_access(self, repository):
+        """Read effective GitHub rights using this sandbox's normal gh credential."""
+        import subprocess
+
+        approved = {"jacobdotpng/centaur", "jacobdotpng/centaur-config", "jacobdotpng/agent-platform"}
+        if repository not in approved:
+            return {"repository": repository, "allowed": False, "reason": "outside_approved_repositories"}
+        for label, path in (
+            ("repository_visibility", f"repos/{repository}"),
+            ("pull_requests_read", f"repos/{repository}/pulls?per_page=1"),
+            ("actions_read", f"repos/{repository}/actions/runs?per_page=1"),
+        ):
+            response = subprocess.run(
+                ["gh", "api", "--include", "--method", "GET", path],
+                capture_output=True, text=True, timeout=15, check=False,
+            )
+            first = response.stdout.splitlines()[:1]
+            if response.returncode:
+                return {"repository": repository, "allowed": False, "reason": label,
+                        "http_status": first[0].split()[1] if first and first[0].startswith("HTTP/") else None}
+        return {"repository": repository, "allowed": True,
+                "verified_reads": ["repository_visibility", "pull_requests_read", "actions_read"],
+                "write_permissions": "not_probed"}
+
     def health(self):
         """Read workload readiness and restart reasons."""
         return self._get("health")

@@ -514,6 +514,10 @@ struct WorkflowTaskInput {
     harness_type: HarnessType,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     slack_button_feedback: Option<slack_button_feedback::ButtonFeedback>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    diagnostic_owner: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    diagnostic_parent: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -894,13 +898,30 @@ impl WorkflowRuntime {
         &self,
         request: CreateWorkflowRunRequest,
     ) -> Result<CreateWorkflowRunResponse, WorkflowRuntimeError> {
-        self.create_button_run(request, None).await
+        self.create_owned_run(request, None, None).await
     }
 
     pub async fn create_button_run(
         &self,
         request: CreateWorkflowRunRequest,
         feedback: Option<slack_button_feedback::ButtonFeedback>,
+    ) -> Result<CreateWorkflowRunResponse, WorkflowRuntimeError> {
+        self.create_owned_run(request, feedback, None).await
+    }
+
+    pub async fn create_principal_run(
+        &self,
+        request: CreateWorkflowRunRequest,
+        owner: Option<String>,
+    ) -> Result<CreateWorkflowRunResponse, WorkflowRuntimeError> {
+        self.create_owned_run(request, None, owner).await
+    }
+
+    async fn create_owned_run(
+        &self,
+        request: CreateWorkflowRunRequest,
+        feedback: Option<slack_button_feedback::ButtonFeedback>,
+        owner: Option<String>,
     ) -> Result<CreateWorkflowRunResponse, WorkflowRuntimeError> {
         let workflow_name = request.workflow_name.trim();
         if workflow_name.is_empty() {
@@ -920,6 +941,8 @@ impl WorkflowRuntime {
                         .harness_type
                         .unwrap_or_else(|| self.inner.default_harness.clone()),
                     slack_button_feedback: feedback,
+                    diagnostic_owner: owner,
+                    diagnostic_parent: None,
                 },
                 SpawnOptions {
                     max_attempts: request.max_attempts,
@@ -1052,6 +1075,89 @@ impl WorkflowRuntime {
             }
         }
         Err(WorkflowRuntimeError::NotFound(run_id.to_owned()))
+    }
+
+    pub async fn run_progress(
+        &self,
+        id: &str,
+        owner: Option<&str>,
+    ) -> Result<Value, WorkflowRuntimeError> {
+        let id = uuid::Uuid::parse_str(id).map_err(|_| {
+            WorkflowRuntimeError::BadRequest("expected a workflow run or task UUID".into())
+        })?;
+        let queues = [
+            WORKFLOW_QUEUE,
+            WORKFLOW_SLACK_LIVE_QUEUE,
+            WORKFLOW_ETL_QUEUE,
+            WORKFLOW_ETL_BACKFILL_QUEUE,
+        ];
+        for queue in queues {
+            let (tasks, runs) = absurd_queue_tables(queue)?;
+            let task = sqlx::query(&format!(
+                "select t.task_id::text as task_id, t.params->>'workflow_name' as workflow_name, t.state, t.attempts, t.enqueue_at
+                 from {tasks} t
+                 where (t.task_id = $1::text::uuid or t.task_id = (select task_id from {runs} where run_id = $1::text::uuid))
+                   and ($2::text is null or t.params->>'diagnostic_owner' = $2)"
+            ))
+            .bind(id.to_string())
+            .bind(owner)
+            .fetch_optional(self.inner.client.pool())
+            .await?;
+            let Some(task) = task else { continue };
+            let task_id: String = task.try_get("task_id")?;
+            let checkpoints = format!("absurd.c_{queue}");
+            let progress = sqlx::query_scalar::<_, Value>(&format!(
+                r#"select jsonb_build_object(
+                    'attempts', coalesce((select jsonb_agg(entry order by attempt desc) from (
+                        select attempt, jsonb_build_object('run_id', run_id, 'attempt', attempt,
+                        'state', state, 'started_at', started_at, 'completed_at', completed_at,
+                        'failed_at', failed_at, 'next_available_at', available_at,
+                        'lease_expires_at', claim_expires_at, 'failure_category',
+                        case when failure_reason is null then null
+                             when lower(failure_reason::text) ~ '(capacity|sandbox_running_limit|no sandbox slot)' then 'sandbox_capacity'
+                             when lower(failure_reason::text) ~ '(claimexpired|timeout|timed out)' then 'timeout'
+                             when lower(failure_reason::text) ~ '(forbidden|unauthorized|permission denied)' then 'access_denied'
+                             else 'execution_failed' end) entry
+                        from {runs} where task_id = $1::text::uuid order by attempt desc limit 20
+                    ) recent), '[]'::jsonb),
+                    'checkpoints', coalesce((select jsonb_agg(entry order by updated_at desc) from (
+                        select updated_at, jsonb_build_object('name', left(checkpoint_name, 160),
+                            'state', status, 'updated_at', updated_at, 'run_id', owner_run_id) entry
+                        from {checkpoints} where task_id = $1::text::uuid order by updated_at desc limit 20
+                    ) recent), '[]'::jsonb),
+                    'initial_run_id', (select run_id from {runs} where task_id = $1::text::uuid order by attempt limit 1)
+                )"#
+            ))
+            .bind(&task_id)
+            .fetch_one(self.inner.client.pool())
+            .await?;
+            let mut children = Vec::new();
+            for child_queue in queues {
+                let (child_tasks, _) = absurd_queue_tables(child_queue)?;
+                let entries = sqlx::query_scalar::<_, Value>(&format!(
+                    "select jsonb_build_object('task_id', task_id, 'latest_run_id', last_attempt_run,
+                        'workflow_name', params->>'workflow_name', 'state', state, 'attempts', attempts)
+                     from {child_tasks} where params->>'diagnostic_parent' = $1
+                       and ($2::text is null or params->>'diagnostic_owner' = $2)
+                     order by enqueue_at desc limit 20"
+                ))
+                .bind(&task_id)
+                .bind(owner)
+                .fetch_all(self.inner.client.pool())
+                .await?;
+                children.extend(entries);
+            }
+            return Ok(json!({
+                "task_id": task_id,
+                "workflow_name": task.try_get::<Option<String>, _>("workflow_name")?,
+                "state": task.try_get::<String, _>("state")?,
+                "attempt_count": task.try_get::<i32, _>("attempts")?,
+                "enqueued_at": task.try_get::<OffsetDateTime, _>("enqueue_at")?,
+                "progress": progress,
+                "children": children,
+            }));
+        }
+        Err(WorkflowRuntimeError::NotFound(id.to_string()))
     }
 
     async fn get_run_for_queue(
@@ -2563,6 +2669,8 @@ async fn run_schedule_tick(
                 input: schedule.input.clone(),
                 harness_type: default_harness,
                 slack_button_feedback: None,
+                diagnostic_owner: None,
+                diagnostic_parent: None,
             },
             SpawnOptions {
                 idempotency_key: Some(fire_key.clone()),
@@ -3575,7 +3683,8 @@ async fn handle_python_context_request(
             }
         }
         Some("ctx.workflow.start") => {
-            match start_python_child_workflow(message, input, workflow_clients).await {
+            match start_python_child_workflow(message, input, workflow_clients, ctx.task_id()).await
+            {
                 Ok(value) => Ok(value),
                 Err(error) => Err(error.to_string()),
             }
@@ -3641,7 +3750,7 @@ async fn run_python_child_workflow(
         ctx.task_id(),
         handle.checkpoint_name
     ));
-    let child = start_python_child_workflow(&start, input, workflow_clients).await?;
+    let child = start_python_child_workflow(&start, input, workflow_clients, ctx.task_id()).await?;
     let workflow = required_python_string(&child, "workflow_name", "child workflow")?;
     let client = match workflow_queue_class(workflow) {
         WorkflowQueueClass::Standard => &workflow_clients.standard,
@@ -3712,6 +3821,7 @@ async fn start_python_child_workflow(
     message: &Value,
     parent: &WorkflowTaskInput,
     workflow_clients: &WorkflowQueueClients,
+    parent_task_id: &str,
 ) -> Result<Value, WorkflowRuntimeError> {
     let workflow_name = message
         .get("workflow_name")
@@ -3750,6 +3860,8 @@ async fn start_python_child_workflow(
                 input: child_input,
                 harness_type: parent.harness_type.clone(),
                 slack_button_feedback: None,
+                diagnostic_owner: parent.diagnostic_owner.clone(),
+                diagnostic_parent: Some(parent_task_id.to_owned()),
             },
             SpawnOptions {
                 idempotency_key,

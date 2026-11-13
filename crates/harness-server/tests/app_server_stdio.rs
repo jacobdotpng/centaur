@@ -750,6 +750,47 @@ fn fake_claude_blocks_mode_interrupts_back_to_back_stop() {
 }
 
 #[test]
+fn fake_codex_preserves_account_change_before_turn_start_reply() {
+    let fake_codex = temp_path("fake-codex-account-change.sh");
+    let fake_codex_log = temp_path("fake-codex-account-change-requests.jsonl");
+    let reply = r#"printf '{"id":%s,"result":{"turn":{"id":"turn-1"}}}\n' "$id""#;
+    let invalidation =
+        r#"printf '%s\n' '{"method":"account/updated","params":{"authMode":"chatgpt"}}'"#;
+    let script = fake_codex_app_server_script(&fake_codex_log);
+    assert!(script.contains(reply));
+    let script = script.replace(reply, &format!("{invalidation}\n      {reply}"));
+    std::fs::write(&fake_codex, script).expect("write fake codex script");
+    let mut permissions = std::fs::metadata(&fake_codex).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&fake_codex, permissions).unwrap();
+    let mut bridge = BridgeProcess::spawn_harness_blocks(
+        Harness::Codex,
+        None,
+        Some(("CODEX_BIN", fake_codex.to_str().unwrap())),
+    );
+    let turn = bridge.run_blocks_user_turn("say codex blocks", Duration::from_secs(5));
+    let lines = bridge.finish_successfully();
+    assert_completed_turn(&turn);
+    let events: Vec<Value> = lines
+        .iter()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let snapshot = events
+        .iter()
+        .position(|event| event["method"] == "account/rateLimits/updated")
+        .expect("quota snapshot");
+    let changed = events
+        .iter()
+        .position(|event| event["method"] == "account/updated")
+        .expect("account invalidation");
+    let started = events
+        .iter()
+        .position(|event| event["method"] == "turn/started")
+        .expect("turn started");
+    assert!(snapshot < changed && changed < started);
+}
+
+#[test]
 fn fake_codex_blocks_mode_starts_turn_when_quota_request_never_replies() {
     let fake_codex = temp_path("fake-codex-no-quota.sh");
     let fake_codex_log = temp_path("fake-codex-no-quota-requests.jsonl");

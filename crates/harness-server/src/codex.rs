@@ -1118,13 +1118,11 @@ fn streams_turn_output(method: &str) -> bool {
     method.starts_with("item/") || method == "thread/tokenUsage/updated"
 }
 
-/// Account-global updates have no turn ID. Discard queued startup/idle updates
-/// while awaiting RPC replies; only forward fresh updates during an active turn.
+/// Quota updates have no turn ID. Discard queued startup/idle snapshots while
+/// awaiting RPC replies. Preserve account/updated so consumers invalidate any
+/// snapshot already emitted before the turn/start reply.
 fn is_account_usage_notification(value: &Value) -> bool {
-    matches!(
-        notification_method(value),
-        Some("account/rateLimits/updated" | "account/updated")
-    )
+    notification_method(value) == Some("account/rateLimits/updated")
 }
 
 fn is_server_request(value: &Value) -> bool {
@@ -1397,6 +1395,10 @@ mod tests {
     #[test]
     fn discards_account_usage_while_waiting_for_rpc_scope() {
         assert!(is_account_usage_notification(&rate_limits_updated()));
+        assert!(!is_account_usage_notification(&json!({
+            "method": "account/updated",
+            "params": {}
+        })));
         assert!(!is_account_usage_notification(&turn_started()));
         assert!(!is_account_usage_notification(&json!({
             "method": "some/future/codexMethod",

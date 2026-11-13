@@ -1212,6 +1212,7 @@ describe('slackbotv2', () => {
     expect(metadataBlockTexts(slackApi.calls)).toHaveLength(1)
     expect(metadataBlockTexts(slackApi.calls)[0]).toContain('Codex')
     expect(metadataBlockTexts(slackApi.calls)[0]).toContain('Low')
+    expect(metadataBlockTexts(slackApi.calls)[0]).toContain('82% remaining (5h) · 64% remaining (Weekly)')
     expect(metadataBlockTexts(slackApi.calls)[0]).not.toContain('Fast')
 
     slackApi.reset()
@@ -5590,6 +5591,10 @@ function logData(logs: CapturedLog[], event: string): Record<string, unknown> | 
 
 function sampleCodexNotifications(answer: string): ServerNotification[] {
   return [
+    { method: 'account/rateLimits/updated', params: { rateLimits: {
+      primary: { usedPercent: 18, windowDurationMins: 300, resetsAt: null },
+      secondary: { usedPercent: 36, windowDurationMins: 10080, resetsAt: null }
+    } } },
     {
       method: 'thread/name/updated',
       params: {

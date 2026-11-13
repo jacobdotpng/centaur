@@ -304,6 +304,8 @@ export function personaFallbackNotice(
     : `Persona "${unavailablePersonaId}" isn't available. Continuing without a persona.`
 }
 
+export const codexUsageContextBlocks = new WeakMap<SlackContextBlock, string>()
+
 /** Builds a Slack context block containing response metadata or a notice. */
 export function buildSlackResponseContextBlock(params: {
   harnessType?: string | null
@@ -334,8 +336,13 @@ export function buildSlackResponseContextBlock(params: {
   if (segments.length === 0) return undefined
   // Middot (U+00B7) with a space on each side, matching the bot's other
   // context lines.
-  return {
+  const block: SlackContextBlock = {
     type: 'context',
     elements: [{ type: 'mrkdwn', text: segments.join(' · ') }]
   }
+  if (includeMetadata && params.harnessType === 'codex' &&
+      (!params.provider || params.provider === 'openai')) {
+    codexUsageContextBlocks.set(block, segments.join(' · '))
+  }
+  return block
 }

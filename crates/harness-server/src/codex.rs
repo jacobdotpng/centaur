@@ -450,6 +450,24 @@ fn run_codex_user_turn<W: Write>(
         .expect("thread id was initialized")
         .clone();
 
+    // Fetch an execution-local snapshot rather than replaying account-global
+    // notifications queued while idle. API-key/custom providers may not expose it.
+    if model_provider == "openai" {
+        let id = next_request_id(request_id);
+        codex.send_request(id, "account/rateLimits/read", json!({}), traceparent)?;
+        if let Ok(snapshot) = codex.read_response_or_forward(id, stdout, Some(&current_thread_id)) {
+            if let Some(limits) = snapshot.get("rateLimits").filter(|value| value.is_object()) {
+                codex.citations.write_value(
+                    stdout,
+                    &json!({
+                        "method": "account/rateLimits/updated",
+                        "params": { "rateLimits": limits }
+                    }),
+                )?;
+            }
+        }
+    }
+
     let mut params = json!({
         "threadId": current_thread_id,
         "input": input,
@@ -740,7 +758,7 @@ impl CodexJsonRpcChild {
                 }
                 return Ok(result);
             }
-            if notification_method(&value).is_some() && !is_dropped_notification(&value) {
+            if notification_method(&value).is_some() && !is_account_usage_notification(&value) {
                 notifications.push(value);
             }
         }
@@ -1068,9 +1086,13 @@ fn streams_turn_output(method: &str) -> bool {
     method.starts_with("item/") || method == "thread/tokenUsage/updated"
 }
 
-/// Notifications known to be unused by harness consumers.
-fn is_dropped_notification(value: &Value) -> bool {
-    notification_method(value) == Some("account/rateLimits/updated")
+/// Account-global updates have no turn ID. Discard queued startup/idle updates
+/// while awaiting RPC replies; only forward fresh updates during an active turn.
+fn is_account_usage_notification(value: &Value) -> bool {
+    matches!(
+        notification_method(value),
+        Some("account/rateLimits/updated" | "account/updated")
+    )
 }
 
 fn is_server_request(value: &Value) -> bool {
@@ -1341,10 +1363,10 @@ mod tests {
     }
 
     #[test]
-    fn drops_only_the_rate_limits_notification() {
-        assert!(is_dropped_notification(&rate_limits_updated()));
-        assert!(!is_dropped_notification(&turn_started()));
-        assert!(!is_dropped_notification(&json!({
+    fn discards_account_usage_while_waiting_for_rpc_scope() {
+        assert!(is_account_usage_notification(&rate_limits_updated()));
+        assert!(!is_account_usage_notification(&turn_started()));
+        assert!(!is_account_usage_notification(&json!({
             "method": "some/future/codexMethod",
             "params": {}
         })));

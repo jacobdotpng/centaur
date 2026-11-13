@@ -774,6 +774,27 @@ fn fake_codex_blocks_mode_spawns_app_server_and_translates_user_blocks() {
 
     assert_completed_turn(&turn);
     assert_eq!(turn.text_from_deltas, "codex blocks");
+    let quota = stdout_lines
+        .iter()
+        .find_map(|line| {
+            let value: Value = serde_json::from_str(line).ok()?;
+            (value["method"] == "account/rateLimits/updated").then_some(value)
+        })
+        .expect("active Codex account usage reaches the execution output stream");
+    assert_eq!(quota["params"]["rateLimits"]["primary"]["usedPercent"], 18);
+    assert_eq!(
+        stdout_lines
+            .iter()
+            .filter(|line| line.contains("account/rateLimits/updated"))
+            .count(),
+        2,
+        "discard account-global updates received outside an active turn"
+    );
+    assert_eq!(
+        quota["params"]["rateLimits"]["secondary"]["windowDurationMins"],
+        10080
+    );
+
     assert_codex_v2_turn(&turn);
     assert!(
         stdout_lines
@@ -3036,8 +3057,13 @@ while IFS= read -r line; do
       id=$(request_id "$line")
       printf '{"id":%s,"result":{"userAgent":"fake-codex"}}\n' "$id"
       ;;
+    *'"method":"account/rateLimits/read"'*)
+      id=$(request_id "$line")
+      printf '{"id":%s,"result":{"rateLimits":{"primary":{"usedPercent":18,"windowDurationMins":300,"resetsAt":null},"secondary":{"usedPercent":36,"windowDurationMins":10080,"resetsAt":null}}}}\n' "$id"
+      ;;
     *'"method":"thread/start"'*)
       id=$(request_id "$line")
+      printf '%s\n' '{"method":"account/rateLimits/updated","params":{"rateLimits":{"primary":{"usedPercent":99,"windowDurationMins":300}}}}'
       printf '{"id":%s,"result":{"thread":{"id":"thread-1"}}}\n' "$id"
       ;;
     *'"method":"thread/resume"'*)
@@ -3048,6 +3074,8 @@ while IFS= read -r line; do
       id=$(request_id "$line")
       printf '{"id":%s,"result":{"turn":{"id":"turn-1"}}}\n' "$id"
       printf '%s\n' '{"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":"turn-1","items":[],"itemsView":"full","status":"inProgress","error":null,"startedAt":1,"completedAt":null,"durationMs":null}}}'
+      # Protocol fields verified against codex-cli 0.165.0 generated bindings.
+      printf '%s\n' '{"method":"account/rateLimits/updated","params":{"rateLimits":{"primary":{"usedPercent":18,"windowDurationMins":300,"resetsAt":null},"secondary":{"usedPercent":36,"windowDurationMins":10080,"resetsAt":null}}}}'
       if [ -n "${FAKE_CODEX_TURN_DELAY:-}" ]; then
         sleep "$FAKE_CODEX_TURN_DELAY"
       fi
@@ -3102,6 +3130,10 @@ while IFS= read -r line; do
     *'"method":"initialize"'*)
       id=$(request_id "$line")
       printf '{"id":%s,"result":{"userAgent":"fake-codex"}}\n' "$id"
+      ;;
+    *'"method":"account/rateLimits/read"'*)
+      id=$(request_id "$line")
+      printf '{"id":%s,"error":{"code":-32600,"message":"usage unavailable"}}\n' "$id"
       ;;
     *'"method":"thread/start"'*)
       id=$(request_id "$line")

@@ -455,16 +455,16 @@ fn run_codex_user_turn<W: Write>(
     if model_provider == "openai" {
         let id = next_request_id(request_id);
         codex.send_request(id, "account/rateLimits/read", json!({}), traceparent)?;
-        if let Ok(snapshot) = codex.read_response_or_forward(id, stdout, Some(&current_thread_id)) {
-            if let Some(limits) = snapshot.get("rateLimits").filter(|value| value.is_object()) {
-                codex.citations.write_value(
-                    stdout,
-                    &json!({
-                        "method": "account/rateLimits/updated",
-                        "params": { "rateLimits": limits }
-                    }),
-                )?;
-            }
+        if let Ok(snapshot) = codex.read_response_or_forward(id, stdout, Some(&current_thread_id))
+            && let Some(limits) = snapshot.get("rateLimits").filter(|value| value.is_object())
+        {
+            codex.citations.write_value(
+                stdout,
+                &json!({
+                    "method": "account/rateLimits/updated",
+                    "params": { "rateLimits": limits }
+                }),
+            )?;
         }
     }
 

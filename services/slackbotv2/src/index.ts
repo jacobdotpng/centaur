@@ -32,6 +32,7 @@ import {
 } from '@centaur/rendering'
 import { dispatchWorkflowMessage, parseWorkflowTriggers } from './workflow-triggers'
 import { conflateChatSdkStream } from './conflate'
+import { withCodexUsageFooter } from './codex-usage-footer'
 import { CitationTextFilter, stripUnresolvedCitations } from './citation-text'
 import { observeSeconds, slackbotMetrics } from './metrics'
 import {
@@ -3295,7 +3296,7 @@ async function renderExecutionStream(
             harnessToChatSdkStream(
               restoreAssistantStatusAfterSteering(
                 thread,
-                stream,
+                withCodexUsageFooter(stream, responseContextBlock),
                 statusTracker,
                 options,
                 trace,

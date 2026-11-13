@@ -750,6 +750,120 @@ fn fake_claude_blocks_mode_interrupts_back_to_back_stop() {
 }
 
 #[test]
+fn fake_codex_preserves_account_change_before_turn_start_reply() {
+    let fake_codex = temp_path("fake-codex-account-change.sh");
+    let fake_codex_log = temp_path("fake-codex-account-change-requests.jsonl");
+    let reply = r#"printf '{"id":%s,"result":{"turn":{"id":"turn-1"}}}\n' "$id""#;
+    let invalidation =
+        r#"printf '%s\n' '{"method":"account/updated","params":{"authMode":"chatgpt"}}'"#;
+    let script = fake_codex_app_server_script(&fake_codex_log);
+    assert!(script.contains(reply));
+    let script = script.replace(reply, &format!("{invalidation}\n      {reply}"));
+    std::fs::write(&fake_codex, script).expect("write fake codex script");
+    let mut permissions = std::fs::metadata(&fake_codex).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&fake_codex, permissions).unwrap();
+    let mut bridge = BridgeProcess::spawn_harness_blocks(
+        Harness::Codex,
+        None,
+        Some(("CODEX_BIN", fake_codex.to_str().unwrap())),
+    );
+    let turn = bridge.run_blocks_user_turn("say codex blocks", Duration::from_secs(5));
+    let lines = bridge.finish_successfully();
+    assert_completed_turn(&turn);
+    let events: Vec<Value> = lines
+        .iter()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let snapshot = events
+        .iter()
+        .position(|event| event["method"] == "account/rateLimits/updated")
+        .expect("quota snapshot");
+    let changed = events
+        .iter()
+        .position(|event| event["method"] == "account/updated")
+        .expect("account invalidation");
+    let started = events
+        .iter()
+        .position(|event| event["method"] == "turn/started")
+        .expect("turn started");
+    assert!(snapshot < changed && changed < started);
+}
+
+#[test]
+fn fake_codex_preserves_account_change_when_quota_request_fails() {
+    for failure in [
+        ": # Leave the quota request unanswered",
+        r#"printf '{"id":%s,"error":{"code":-32600,"message":"usage unavailable"}}\n' "$id""#,
+    ] {
+        let fake_codex = temp_path("fake-codex-quota-account-change.sh");
+        let fake_codex_log = temp_path("fake-codex-quota-account-change-requests.jsonl");
+        let reply = r#"printf '{"id":%s,"result":{"rateLimits":{"primary":{"usedPercent":18,"windowDurationMins":300,"resetsAt":null},"secondary":{"usedPercent":36,"windowDurationMins":10080,"resetsAt":null}}}}\n' "$id""#;
+        let invalidation =
+            r#"printf '%s\n' '{"method":"account/updated","params":{"authMode":"chatgpt"}}'"#;
+        let script = fake_codex_app_server_script(&fake_codex_log);
+        assert!(script.contains(reply));
+        let script = script.replace(reply, &format!("{invalidation}\n      {failure}"));
+        std::fs::write(&fake_codex, script).unwrap();
+        let mut permissions = std::fs::metadata(&fake_codex).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&fake_codex, permissions).unwrap();
+        let mut bridge = BridgeProcess::spawn_harness_blocks(
+            Harness::Codex,
+            None,
+            Some(("CODEX_BIN", fake_codex.to_str().unwrap())),
+        );
+        let turn = bridge.run_blocks_user_turn("say codex blocks", Duration::from_secs(5));
+        let lines = bridge.finish_successfully();
+        assert_completed_turn(&turn);
+        let events: Vec<Value> = lines
+            .iter()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let changed = events
+            .iter()
+            .position(|event| event["method"] == "account/updated")
+            .expect("account invalidation survives optional quota failure");
+        let quota = events
+            .iter()
+            .position(|event| event["method"] == "account/rateLimits/updated")
+            .expect("active turn quota update");
+        assert!(changed < quota);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["method"] == "account/updated")
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn fake_codex_blocks_mode_starts_turn_when_quota_request_never_replies() {
+    let fake_codex = temp_path("fake-codex-no-quota.sh");
+    let fake_codex_log = temp_path("fake-codex-no-quota-requests.jsonl");
+    let script = fake_codex_app_server_script(&fake_codex_log).replace(
+        r#"printf '{"id":%s,"result":{"rateLimits":{"primary":{"usedPercent":18,"windowDurationMins":300,"resetsAt":null},"secondary":{"usedPercent":36,"windowDurationMins":10080,"resetsAt":null}}}}\n' "$id""#,
+        ": # Leave the quota request unanswered",
+    );
+    assert!(script.contains(": # Leave the quota request unanswered"));
+    std::fs::write(&fake_codex, script).expect("write fake codex script");
+    let mut permissions = std::fs::metadata(&fake_codex).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&fake_codex, permissions).unwrap();
+    let mut bridge = BridgeProcess::spawn_harness_blocks(
+        Harness::Codex,
+        None,
+        Some(("CODEX_BIN", fake_codex.to_str().unwrap())),
+    );
+    let turn = bridge.run_blocks_user_turn("say codex blocks", Duration::from_secs(5));
+    bridge.finish_successfully();
+    assert_completed_turn(&turn);
+    assert_eq!(turn.text_from_deltas, "codex blocks");
+}
+
+#[test]
 fn fake_codex_blocks_mode_spawns_app_server_and_translates_user_blocks() {
     let fake_codex = temp_path("fake-codex.sh");
     let fake_codex_log = temp_path("fake-codex-requests.jsonl");
@@ -774,6 +888,27 @@ fn fake_codex_blocks_mode_spawns_app_server_and_translates_user_blocks() {
 
     assert_completed_turn(&turn);
     assert_eq!(turn.text_from_deltas, "codex blocks");
+    let quota = stdout_lines
+        .iter()
+        .find_map(|line| {
+            let value: Value = serde_json::from_str(line).ok()?;
+            (value["method"] == "account/rateLimits/updated").then_some(value)
+        })
+        .expect("active Codex account usage reaches the execution output stream");
+    assert_eq!(quota["params"]["rateLimits"]["primary"]["usedPercent"], 18);
+    assert_eq!(
+        stdout_lines
+            .iter()
+            .filter(|line| line.contains("account/rateLimits/updated"))
+            .count(),
+        2,
+        "discard account-global updates received outside an active turn"
+    );
+    assert_eq!(
+        quota["params"]["rateLimits"]["secondary"]["windowDurationMins"],
+        10080
+    );
+
     assert_codex_v2_turn(&turn);
     assert!(
         stdout_lines
@@ -3036,8 +3171,13 @@ while IFS= read -r line; do
       id=$(request_id "$line")
       printf '{"id":%s,"result":{"userAgent":"fake-codex"}}\n' "$id"
       ;;
+    *'"method":"account/rateLimits/read"'*)
+      id=$(request_id "$line")
+      printf '{"id":%s,"result":{"rateLimits":{"primary":{"usedPercent":18,"windowDurationMins":300,"resetsAt":null},"secondary":{"usedPercent":36,"windowDurationMins":10080,"resetsAt":null}}}}\n' "$id"
+      ;;
     *'"method":"thread/start"'*)
       id=$(request_id "$line")
+      printf '%s\n' '{"method":"account/rateLimits/updated","params":{"rateLimits":{"primary":{"usedPercent":99,"windowDurationMins":300}}}}'
       printf '{"id":%s,"result":{"thread":{"id":"thread-1"}}}\n' "$id"
       ;;
     *'"method":"thread/resume"'*)
@@ -3048,6 +3188,8 @@ while IFS= read -r line; do
       id=$(request_id "$line")
       printf '{"id":%s,"result":{"turn":{"id":"turn-1"}}}\n' "$id"
       printf '%s\n' '{"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":"turn-1","items":[],"itemsView":"full","status":"inProgress","error":null,"startedAt":1,"completedAt":null,"durationMs":null}}}'
+      # Protocol fields verified against codex-cli 0.165.0 generated bindings.
+      printf '%s\n' '{"method":"account/rateLimits/updated","params":{"rateLimits":{"primary":{"usedPercent":18,"windowDurationMins":300,"resetsAt":null},"secondary":{"usedPercent":36,"windowDurationMins":10080,"resetsAt":null}}}}'
       if [ -n "${FAKE_CODEX_TURN_DELAY:-}" ]; then
         sleep "$FAKE_CODEX_TURN_DELAY"
       fi
@@ -3102,6 +3244,10 @@ while IFS= read -r line; do
     *'"method":"initialize"'*)
       id=$(request_id "$line")
       printf '{"id":%s,"result":{"userAgent":"fake-codex"}}\n' "$id"
+      ;;
+    *'"method":"account/rateLimits/read"'*)
+      id=$(request_id "$line")
+      printf '{"id":%s,"error":{"code":-32600,"message":"usage unavailable"}}\n' "$id"
       ;;
     *'"method":"thread/start"'*)
       id=$(request_id "$line")

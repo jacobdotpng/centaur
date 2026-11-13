@@ -8,7 +8,7 @@ use std::sync::{
     mpsc::{self, Receiver, RecvTimeoutError},
 };
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
@@ -450,6 +450,29 @@ fn run_codex_user_turn<W: Write>(
         .expect("thread id was initialized")
         .clone();
 
+    // Fetch an execution-local snapshot rather than replaying account-global
+    // notifications queued while idle. API-key/custom providers may not expose it.
+    if model_provider == "openai" {
+        let id = next_request_id(request_id);
+        codex.send_request(id, "account/rateLimits/read", json!({}), traceparent)?;
+        // Quota metadata is optional: never block turn startup indefinitely.
+        if let Ok(snapshot) = codex.read_response_or_forward_until(
+            id,
+            stdout,
+            Some(&current_thread_id),
+            Some(Instant::now() + Duration::from_millis(500)),
+        ) && let Some(limits) = snapshot.get("rateLimits").filter(|value| value.is_object())
+        {
+            codex.citations.write_value(
+                stdout,
+                &json!({
+                    "method": "account/rateLimits/updated",
+                    "params": { "rateLimits": limits }
+                }),
+            )?;
+        }
+    }
+
     let mut params = json!({
         "threadId": current_thread_id,
         "input": input,
@@ -712,11 +735,33 @@ impl CodexJsonRpcChild {
         stdout: &mut W,
         thread_id: Option<&str>,
     ) -> Result<Value> {
+        self.read_response_or_forward_until(expected_id, stdout, thread_id, None)
+    }
+
+    fn read_response_or_forward_until<W: Write>(
+        &mut self,
+        expected_id: i64,
+        stdout: &mut W,
+        thread_id: Option<&str>,
+        deadline: Option<Instant>,
+    ) -> Result<Value> {
         // Notifications can precede the response that identifies the new thread
         // or turn. Buffer them until ownership is known, including on resume.
         let mut notifications = Vec::new();
         loop {
-            let value = self.read_value()?;
+            let value = if let Some(deadline) = deadline {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(HarnessServerError::Protocol(
+                        "Codex optional request timed out".to_owned(),
+                    ));
+                }
+                self.read_value_timeout(remaining)?.ok_or_else(|| {
+                    HarnessServerError::Protocol("Codex optional request timed out".to_owned())
+                })?
+            } else {
+                self.read_value()?
+            };
             if is_server_request(&value) {
                 self.send_error_response(&value)?;
                 continue;
@@ -740,7 +785,14 @@ impl CodexJsonRpcChild {
                 }
                 return Ok(result);
             }
-            if notification_method(&value).is_some() && !is_dropped_notification(&value) {
+            if notification_method(&value) == Some("account/updated") {
+                // Account invalidation is global and needs no response scope.
+                // Forward it now so optional-request errors/timeouts cannot
+                // discard it and let later quota updates revive stale usage.
+                self.citations.write_value(stdout, &value)?;
+            } else if notification_method(&value).is_some()
+                && !is_account_usage_notification(&value)
+            {
                 notifications.push(value);
             }
         }
@@ -902,8 +954,13 @@ impl CodexJsonRpcChild {
     }
 
     fn read_value_timeout(&mut self, timeout: Duration) -> Result<Option<Value>> {
+        let deadline = Instant::now() + timeout;
         loop {
-            let line = match self.stdout.recv_timeout(timeout) {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Ok(None);
+            }
+            let line = match self.stdout.recv_timeout(remaining) {
                 Ok(line) => line.map_err(HarnessServerError::CodexTransport)?,
                 Err(RecvTimeoutError::Timeout) => return Ok(None),
                 Err(RecvTimeoutError::Disconnected) => {
@@ -1068,8 +1125,10 @@ fn streams_turn_output(method: &str) -> bool {
     method.starts_with("item/") || method == "thread/tokenUsage/updated"
 }
 
-/// Notifications known to be unused by harness consumers.
-fn is_dropped_notification(value: &Value) -> bool {
+/// Quota updates have no turn ID. Discard queued startup/idle snapshots while
+/// awaiting RPC replies. Preserve account/updated so consumers invalidate any
+/// snapshot already emitted before the turn/start reply.
+fn is_account_usage_notification(value: &Value) -> bool {
     notification_method(value) == Some("account/rateLimits/updated")
 }
 
@@ -1341,10 +1400,14 @@ mod tests {
     }
 
     #[test]
-    fn drops_only_the_rate_limits_notification() {
-        assert!(is_dropped_notification(&rate_limits_updated()));
-        assert!(!is_dropped_notification(&turn_started()));
-        assert!(!is_dropped_notification(&json!({
+    fn discards_account_usage_while_waiting_for_rpc_scope() {
+        assert!(is_account_usage_notification(&rate_limits_updated()));
+        assert!(!is_account_usage_notification(&json!({
+            "method": "account/updated",
+            "params": {}
+        })));
+        assert!(!is_account_usage_notification(&turn_started()));
+        assert!(!is_account_usage_notification(&json!({
             "method": "some/future/codexMethod",
             "params": {}
         })));

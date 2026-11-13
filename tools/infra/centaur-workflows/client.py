@@ -19,7 +19,15 @@ class WorkflowClient:
             with urllib.request.urlopen(req, timeout=30) as response:
                 return json.load(response)
         except urllib.error.HTTPError as error:
-            raise RuntimeError(f"Workflow API HTTP {error.code}; check workflow enablement and the current principal's workflow access") from error
+            with error:
+                code = error.code
+            detail = {
+                401: "principal authentication failed",
+                403: "the current principal lacks the endpoint capability or is not an allowed starter",
+                404: "the resource is missing or outside the current principal's scope",
+                503: "the workflow runtime is unavailable",
+            }.get(code, "workflow request failed")
+            raise RuntimeError(f"Workflow API HTTP {code}: {detail}") from None
 
     def catalog(self):
         return self.request("GET", "/api/workflows")
@@ -30,6 +38,13 @@ class WorkflowClient:
 
     def run(self, run_id):
         return self.request("GET", "/api/workflows/runs/" + urllib.parse.quote(run_id, safe=""))["run"]
+
+    def progress(self, run_id):
+        return self.request("GET", "/api/workflows/runs/" + urllib.parse.quote(run_id, safe="") + "/progress")
+
+    def access(self, workflow, action):
+        query = urllib.parse.urlencode({"workflow": workflow, "action": action})
+        return self.request("GET", "/api/workflows/access?" + query)
 
     def start(self, name, inputs, idempotency_key):
         return self.request("POST", "/api/workflows/runs", {"workflow_name": name, "input": inputs, "idempotency_key": idempotency_key})

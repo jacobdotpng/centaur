@@ -66,7 +66,7 @@ async def handler(inp: Input, ctx: WorkflowContext) -> dict[str, Any]:
     diagnostics_url = os.environ.get("CENTAUR_DIAGNOSTICS_URL", "").strip()
     diagnostics_instruction = (
         f"The operator configured the read-only diagnostics API at {diagnostics_url}. "
-        "Use that URL with curl through the normal credential proxy. "
+        "Use centaur-diagnostics through the normal credential proxy. "
         "For pipelines, use repo=source for Centaur source or repo=config for Centaur configuration."
         if diagnostics_url
         else "Use the diagnostics API documented in the deployment-specific sandbox instructions when present."
@@ -111,12 +111,16 @@ Return only a JSON object. Evidence must come from successful live queries.
             raise RuntimeError(str(result.get("reason", "Full send blocked")))
         return result
 
+    preflight_instruction = (
+        "Run centaur-diagnostics preflight and report any failure before editing. "
+        "This command checks the exact deployment and both pipelines sequentially."
+    )
+
     if inp.diagnostics_only:
-        checked = await turn("diagnostics", """This is a read-only diagnostic check.
+        checked = await turn("diagnostics", preflight_instruction + """\nThis is a read-only diagnostic check.
 Do not modify files, branches, PRs, deployment settings, or Slack messages.
 Use the configured deployment diagnostics API, through the usual credential
-proxy. Read both pipeline aliases and deployment using the exact versioned paths
-above. Also read /v1/health and /v1/logs?service=api&lines=1. Do not return log content,
+proxy. Run `centaur-diagnostics preflight --extended` to also check health and logs. Do not return log content,
 raw payloads, or credentials. Report blocked if any query fails. On success
 return {"status":"verified","deployment_revision":"live 40-character config SHA",
 "deployment":true,"pipelines":true,"health":true,"logs":true}.
@@ -135,8 +139,8 @@ return {"status":"verified","deployment_revision":"live 40-character config SHA"
     await post("started", f"Full send `{ctx.run_id}` started for `{inp.repository}` after Ship it. Building the agreed scope.")
     try:
         build = await turn("build", f"""Before editing, inspect the agreed deployment pipeline. If a diagnostics API
-is configured, confirm /v1/deployment and both /v1/pipelines reads succeed
-through the configured proxy using the exact URLs above. This preflight checks that verification
+is configured, follow this preflight: {preflight_instruction}
+This preflight checks that verification
 is available; the requested changes are not expected to be deployed yet.
 Implement the agreed scope in a writable clone using git-branch.
 Run relevant checks, commit, push, and open one PR. Use the branch marker

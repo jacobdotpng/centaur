@@ -262,12 +262,17 @@ pub fn build_router_with_app_state(state: AppState) -> Router {
         )
         .merge(slack_proxy_router())
         .route("/api/workflows", get(list_workflows))
+        .route("/api/workflows/access", get(explain_workflow_access))
         .route("/api/workflows/schedules", get(list_workflow_schedules))
         .route(
             "/api/workflows/runs",
             post(create_workflow_run).get(list_workflow_runs),
         )
         .route("/api/workflows/runs/{run_id}", get(get_workflow_run))
+        .route(
+            "/api/workflows/runs/{run_id}/progress",
+            get(get_workflow_progress),
+        )
         .route(
             "/api/workflows/runs/{run_id}/cancel",
             post(cancel_workflow_run),
@@ -428,6 +433,7 @@ enum RouteAccess {
     Capability(Capability),
     PrincipalOnly,
     WorkflowStart,
+    ExplainWorkflowAccess,
     /// Session write access, held by an API client (confined to its own
     /// namespace) or an operator; ingress keys are excluded.
     ApiClientOrOperatorSessionWrite,
@@ -486,6 +492,10 @@ async fn authorize_api_request(
                 || (caller.class() == CallerClass::Ingress
                     && caller.has_capability(Capability::SlackWorkflowStart))
         }
+        RouteAccess::ExplainWorkflowAccess => matches!(
+            caller.class(),
+            CallerClass::Principal | CallerClass::Admin | CallerClass::Console
+        ),
         RouteAccess::PrincipalOnly => caller.class() == CallerClass::Principal,
         RouteAccess::ApiClientOrOperatorSessionWrite => {
             caller.has_capability(Capability::SessionsWrite)
@@ -585,9 +595,11 @@ fn route_access(method: &Method, route: &str) -> Option<RouteAccess> {
         | (&Method::POST, "/api/session/{thread_key}/pause") => {
             capability(Capability::SandboxesDrain)
         }
+        (&Method::GET, "/api/workflows/access") => Some(RouteAccess::ExplainWorkflowAccess),
         (&Method::GET, "/api/workflows")
         | (&Method::GET, "/api/workflows/schedules")
         | (&Method::GET, "/api/workflows/runs")
+        | (&Method::GET, "/api/workflows/runs/{run_id}/progress")
         | (&Method::GET, "/api/workflows/runs/{run_id}") => capability(Capability::WorkflowsRead),
         (&Method::POST, "/api/workflows/runs") => Some(RouteAccess::WorkflowStart),
         (&Method::POST, "/api/workflows/runs/{run_id}/cancel") => {
@@ -2660,7 +2672,9 @@ async fn create_workflow_run(
             request.workflow_name.trim()
         )));
     }
-    let run = workflows.create_run(request).await?;
+    let run = workflows
+        .create_principal_run(request, caller.principal_subject().map(str::to_owned))
+        .await?;
     Ok(Json(serde_json::to_value(run)?))
 }
 
@@ -2695,6 +2709,75 @@ async fn get_workflow_run(
     let workflows = workflow_runtime(&state)?;
     let run = workflows.get_run(&run_id).await?;
     Ok(Json(json!({ "ok": true, "run": run })))
+}
+
+#[derive(serde::Deserialize)]
+struct WorkflowAccessQuery {
+    workflow: String,
+    action: String,
+}
+
+async fn explain_workflow_access(
+    State(state): State<AppState>,
+    Extension(caller): Extension<AuthenticatedCaller>,
+    Query(query): Query<WorkflowAccessQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let capability = match query.action.as_str() {
+        "read" => Capability::WorkflowsRead,
+        "start" => Capability::WorkflowsWrite,
+        _ => return Err(ApiError::BadRequest("expected read or start".into())),
+    };
+    let workflows = workflow_runtime(&state)?;
+    let starter_allowed = query.action == "read"
+        || caller_may_start_workflow(
+            workflows.workflow_starters(&query.workflow).as_ref(),
+            caller.class(),
+        );
+    let workflow = workflows
+        .catalog()
+        .await?
+        .into_iter()
+        .find(|entry| entry["workflow_name"].as_str() == Some(query.workflow.as_str()));
+    let enabled = workflow
+        .as_ref()
+        .and_then(|entry| entry["enabled"].as_bool())
+        .unwrap_or(false);
+    let reason = if !caller.has_capability(capability) {
+        if query.action == "read" {
+            "sandbox_workflows_read_disabled"
+        } else {
+            "sandbox_workflows_write_disabled"
+        }
+    } else if workflow.is_none() {
+        "workflow_definition_missing"
+    } else if query.action == "start" && !enabled {
+        "workflow_not_enabled"
+    } else if !starter_allowed {
+        "workflow_starter_class_denied"
+    } else {
+        "allowed"
+    };
+    Ok(Json(json!({
+        "workflow": query.workflow, "action": query.action,
+        "caller_class": caller.class().as_str(), "allowed": reason == "allowed", "reason": reason,
+    })))
+}
+
+async fn get_workflow_progress(
+    State(state): State<AppState>,
+    Extension(caller): Extension<AuthenticatedCaller>,
+    Path(run_id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let owner = match caller.class() {
+        CallerClass::Admin | CallerClass::Console => None,
+        _ => Some(caller.principal_subject().ok_or_else(|| {
+            ApiError::Forbidden("workflow progress requires the creating principal".into())
+        })?),
+    };
+    let progress = workflow_runtime(&state)?
+        .run_progress(&run_id, owner)
+        .await?;
+    Ok(Json(progress))
 }
 
 async fn cancel_workflow_run(

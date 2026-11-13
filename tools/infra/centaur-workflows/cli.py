@@ -14,7 +14,10 @@ def main():
     commands.add_parser("list", help="List discovered definitions and enabled status, including workflows without runs")
     runs = commands.add_parser("runs", help="List durable run history, not the definition registry")
     runs.add_argument("--workflow")
-    for name in ["run", "wait"]:
+    access = commands.add_parser("access", help="Explain workflow capability and starter checks for the current principal")
+    access.add_argument("workflow")
+    access.add_argument("action", choices=("read", "start"))
+    for name in ["run", "wait", "progress"]:
         sub = commands.add_parser(name)
         sub.add_argument("run_id")
         if name == "wait": sub.add_argument("--timeout", type=int, default=300)
@@ -44,6 +47,8 @@ def main():
         elif args.command == "list": result = client.catalog()
         elif args.command == "runs": result = client.runs(args.workflow)
         elif args.command == "run": result = client.run(args.run_id)
+        elif args.command == "progress": result = client.progress(args.run_id)
+        elif args.command == "access": result = client.access(args.workflow, args.action)
         elif args.command == "wait":
             if not 1 <= args.timeout <= 1800: parser.error("timeout must be between 1 and 1800 seconds")
             result = client.wait(args.run_id, args.timeout)

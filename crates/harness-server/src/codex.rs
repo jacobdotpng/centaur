@@ -785,7 +785,14 @@ impl CodexJsonRpcChild {
                 }
                 return Ok(result);
             }
-            if notification_method(&value).is_some() && !is_account_usage_notification(&value) {
+            if notification_method(&value) == Some("account/updated") {
+                // Account invalidation is global and needs no response scope.
+                // Forward it now so optional-request errors/timeouts cannot
+                // discard it and let later quota updates revive stale usage.
+                self.citations.write_value(stdout, &value)?;
+            } else if notification_method(&value).is_some()
+                && !is_account_usage_notification(&value)
+            {
                 notifications.push(value);
             }
         }

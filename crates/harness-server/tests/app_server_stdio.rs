@@ -791,6 +791,55 @@ fn fake_codex_preserves_account_change_before_turn_start_reply() {
 }
 
 #[test]
+fn fake_codex_preserves_account_change_when_quota_request_fails() {
+    for failure in [
+        ": # Leave the quota request unanswered",
+        r#"printf '{"id":%s,"error":{"code":-32600,"message":"usage unavailable"}}\n' "$id""#,
+    ] {
+        let fake_codex = temp_path("fake-codex-quota-account-change.sh");
+        let fake_codex_log = temp_path("fake-codex-quota-account-change-requests.jsonl");
+        let reply = r#"printf '{"id":%s,"result":{"rateLimits":{"primary":{"usedPercent":18,"windowDurationMins":300,"resetsAt":null},"secondary":{"usedPercent":36,"windowDurationMins":10080,"resetsAt":null}}}}\n' "$id""#;
+        let invalidation =
+            r#"printf '%s\n' '{"method":"account/updated","params":{"authMode":"chatgpt"}}'"#;
+        let script = fake_codex_app_server_script(&fake_codex_log);
+        assert!(script.contains(reply));
+        let script = script.replace(reply, &format!("{invalidation}\n      {failure}"));
+        std::fs::write(&fake_codex, script).unwrap();
+        let mut permissions = std::fs::metadata(&fake_codex).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&fake_codex, permissions).unwrap();
+        let mut bridge = BridgeProcess::spawn_harness_blocks(
+            Harness::Codex,
+            None,
+            Some(("CODEX_BIN", fake_codex.to_str().unwrap())),
+        );
+        let turn = bridge.run_blocks_user_turn("say codex blocks", Duration::from_secs(5));
+        let lines = bridge.finish_successfully();
+        assert_completed_turn(&turn);
+        let events: Vec<Value> = lines
+            .iter()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let changed = events
+            .iter()
+            .position(|event| event["method"] == "account/updated")
+            .expect("account invalidation survives optional quota failure");
+        let quota = events
+            .iter()
+            .position(|event| event["method"] == "account/rateLimits/updated")
+            .expect("active turn quota update");
+        assert!(changed < quota);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["method"] == "account/updated")
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
 fn fake_codex_blocks_mode_starts_turn_when_quota_request_never_replies() {
     let fake_codex = temp_path("fake-codex-no-quota.sh");
     let fake_codex_log = temp_path("fake-codex-no-quota-requests.jsonl");

@@ -318,3 +318,23 @@ it('continues native text after Slack rejects structured progress', async () => 
     await server.stop(true)
   }
 })
+
+it('finalizes the real adapter with the latest Codex quota footer', async () => {
+  const { withCodexUsageFooter } = await import('../src/response-context')
+  const block = { type: 'context' as const, elements: [{ type: 'mrkdwn' as const, text: 'Sol 6.1 · Codex · Low' }] }
+  const fixture = streamFixture()
+  try {
+    async function* events() {
+      yield { method: 'answer', text: 'Done' }
+      yield { method: 'account/rateLimits/updated', params: { rateLimits: { secondary: { usedPercent: 38, windowDurationMins: 10080 } } } }
+    }
+    async function* chunks() {
+      for await (const event of withCodexUsageFooter(events(), block)) {
+        if ('text' in event) yield event.text!
+      }
+    }
+    await fixture.adapter.stream('slack:CCHANNEL:100', chunks(), { ...streamOptions, stopBlocks: [block] })
+    const stopped = fixture.calls.find(call => call.method === 'chat.stopStream')
+    expect(JSON.parse(stopped!.body.blocks!)).toEqual([{ type: 'context', elements: [{ type: 'mrkdwn', text: 'Sol 6.1 · Codex · Low · Weekly 62% remaining' }] }])
+  } finally { fixture.close() }
+})

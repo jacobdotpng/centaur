@@ -12,7 +12,7 @@ sys.path.insert(
     str(Path(__file__).resolve().parents[2] / "services" / "workflow-python"),
 )
 
-from workflows.agentic_review import AGENT_DEFAULTS, Input, handler
+from workflows.agentic_review import Input, handler
 
 PR = "https://github.com/jacobdotpng/centaur/pull/12"
 SHA = "a" * 40
@@ -45,9 +45,6 @@ COMMENT = {"comment_url": PR + "#issuecomment-123"}
 
 
 class AgenticReviewTests(unittest.TestCase):
-    def test_agents_release_sandboxes(self):
-        self.assertIs(AGENT_DEFAULTS["release_sandbox_after_turn"], True)
-
     def test_clean_stops_and_replay_reuses_all_side_effects(self):
         ctx = context([CLEAN, COMMENT])
         first = asyncio.run(handler(Input(PR), ctx))

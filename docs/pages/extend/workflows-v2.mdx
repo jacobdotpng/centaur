@@ -196,6 +196,24 @@ startup when it does not exist. It does not create or update the principal. The
 renders `WORKFLOW_HOST_SANDBOX=true`; startup fails if a workflow declares a
 principal while workflow-host sandboxing is disabled.
 
+#### Release completed agent sandboxes
+
+Workflows that do not need a warm workspace between turns can set
+`AGENT_DEFAULTS = {"release_sandbox_after_turn": True}` (or pass that boolean
+per turn). The runtime awaits sandbox release before returning the turn result.
+Terminal execution events and output remain durable; local files, packages and
+processes are discarded, so push commits and upload artifacts before returning.
+A later turn provisions a fresh sandbox.
+
+Explicit thread keys must be scoped to the current workflow run or task:
+`wf:<run_id>:<agent_name>` or `wf:<task_id>:<agent_name>`. Release checks workflow
+ownership and refuses queued or running executions under the session row lock.
+The option defaults to false; Full Send and Agentic Review enable it. It releases
+agent sandboxes, while the Python workflow host stays alive during orchestration.
+Failed or cancelled terminal turns also attempt release; workflow teardown remains
+the fallback for interrupted calls. A failed backend stop leaves the detached
+sandbox for the existing orphan cleanup worker.
+
 #### Pick the model and reasoning effort
 
 `ctx.agent_turn(...)` accepts optional `model`, `provider`, and `reasoning`

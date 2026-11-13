@@ -3854,7 +3854,8 @@ async fn run_python_agent_turn(
         .get("thread_key")
         .and_then(Value::as_str)
         .map(ToOwned::to_owned);
-    let workflow_owned_thread = explicit_thread_key.is_none();
+    let release_sandbox_after_turn = parse_release_sandbox_after_turn(&args)?;
+    let workflow_owned_thread = explicit_thread_key.is_none() || release_sandbox_after_turn;
     let thread_key = explicit_thread_key.unwrap_or_else(|| {
         default_thread_key.unwrap_or_else(|| {
             format!(
@@ -3864,6 +3865,20 @@ async fn run_python_agent_turn(
             )
         })
     });
+    if release_sandbox_after_turn
+        && ![
+            ctx.run_id().to_owned(),
+            ctx.task_id().to_owned(),
+            ctx.task_id().replace('-', ""),
+        ]
+        .iter()
+        .any(|id| thread_key.starts_with(&format!("wf:{id}:")))
+    {
+        return Err(WorkflowRuntimeError::BadRequest(
+            "release_sandbox_after_turn requires a thread scoped to this workflow run or task"
+                .to_owned(),
+        ));
+    }
     let harness_type = parse_agent_harness(&args)?.unwrap_or_else(|| input.harness_type.clone());
     let persona_id = args
         .get("persona_id")
@@ -3929,8 +3944,9 @@ async fn run_python_agent_turn(
     if let Some(model) = model.as_deref() {
         object_insert(&mut execution_metadata, "model", json!(model));
     }
+    let cleanup_thread_key = ThreadKey::parse(thread_key.clone())?;
     let result = run_agent_session_turn(
-        session_runtime,
+        session_runtime.clone(),
         AgentTurnRequest {
             thread_key,
             harness_type,
@@ -3950,8 +3966,31 @@ async fn run_python_agent_turn(
             reasoning,
         },
     )
-    .await?;
-    serde_json::to_value(result).map_err(WorkflowRuntimeError::from)
+    .await;
+    // Terminal events and output are durable before releasing local state.
+    // Await cleanup before replying to Python, so the next step cannot overlap
+    // with this agent's completed sandbox. Active executions are never detached.
+    if release_sandbox_after_turn {
+        let cleanup = session_runtime
+            .release_workflow_session_sandbox(&cleanup_thread_key, ctx.run_id())
+            .await;
+        match cleanup {
+            Err(error) if result.is_ok() => return Err(error.into()),
+            Err(error) => warn!(%error, "failed to release failed workflow agent sandbox"),
+            Ok(_) => {}
+        }
+    }
+    serde_json::to_value(result?).map_err(WorkflowRuntimeError::from)
+}
+
+fn parse_release_sandbox_after_turn(args: &Value) -> Result<bool, WorkflowRuntimeError> {
+    match args.get("release_sandbox_after_turn") {
+        None => Ok(false),
+        Some(Value::Bool(value)) => Ok(*value),
+        Some(_) => Err(WorkflowRuntimeError::BadRequest(
+            "release_sandbox_after_turn must be a boolean".to_owned(),
+        )),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -4994,6 +5033,24 @@ mod tests {
         assert!(value.get("model").is_none());
         assert!(value.get("provider").is_none());
         assert!(value.get("reasoning").is_none());
+    }
+
+    #[test]
+    fn sandbox_release_is_opt_in_and_requires_a_boolean() {
+        assert!(!parse_release_sandbox_after_turn(&json!({})).unwrap());
+        assert!(
+            !parse_release_sandbox_after_turn(&json!({"release_sandbox_after_turn": false}))
+                .unwrap()
+        );
+        assert!(
+            parse_release_sandbox_after_turn(&json!({"release_sandbox_after_turn": true})).unwrap()
+        );
+        for value in [json!(null), json!("true"), json!(1)] {
+            assert!(
+                parse_release_sandbox_after_turn(&json!({"release_sandbox_after_turn": value}))
+                    .is_err()
+            );
+        }
     }
 
     #[test]

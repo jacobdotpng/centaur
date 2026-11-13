@@ -2074,6 +2074,33 @@ impl SessionRuntime {
         let Some(sandbox_id) = self.store.detach_idle_session_sandbox(thread_key).await? else {
             return Ok(None);
         };
+        self.stop_released_session_sandbox(thread_key, sandbox_id)
+            .await
+    }
+
+    /// Release an idle agent sandbox only if it belongs to this workflow run.
+    /// Durable session messages and terminal execution events remain available.
+    pub async fn release_workflow_session_sandbox(
+        &self,
+        thread_key: &ThreadKey,
+        workflow_run_id: &str,
+    ) -> Result<Option<String>, SessionRuntimeError> {
+        let Some(sandbox_id) = self
+            .store
+            .detach_idle_workflow_session_sandbox(thread_key, workflow_run_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        self.stop_released_session_sandbox(thread_key, sandbox_id)
+            .await
+    }
+
+    async fn stop_released_session_sandbox(
+        &self,
+        thread_key: &ThreadKey,
+        sandbox_id: String,
+    ) -> Result<Option<String>, SessionRuntimeError> {
         self.sandbox_pipes.remove(&sandbox_id);
         let stopped = match self
             .sandbox_runtime
@@ -11681,6 +11708,15 @@ mod adoption_tests {
                 ))
             )
         };
+        // Workflow cleanup must never release an ordinary chat session.
+        assert!(matches!(
+            runtime
+                .release_workflow_session_sandbox(&thread_key, "run-owner")
+                .await,
+            Err(SessionRuntimeError::Store(
+                SessionStoreError::WorkflowOwnedSandbox { .. }
+            ))
+        ));
         assert!(refused(runtime.release_session_sandbox(&thread_key).await));
         store
             .mark_execution_running(&execution.execution_id)
@@ -11804,6 +11840,73 @@ mod adoption_tests {
         assert_eq!(
             store.get_session(&thread_key).await.unwrap().sandbox_id,
             Some("sbx-release-wf".to_owned())
+        );
+        reset_test_store(&store).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn workflow_agent_release_checks_owner_and_active_execution() {
+        let Some(store) = test_store().await else {
+            return;
+        };
+        let _serial = TEST_LOCK.lock().await;
+        let thread_key = session_with_warm_sandbox(
+            &store,
+            "release-owned-agent",
+            json!({"source": "absurd_workflow", "workflow_run_id": "run-owner",
+                   "workflow_owned_thread": true}),
+            "sbx-owned-agent",
+        )
+        .await;
+        let backend = Arc::new(MockBackend::new(SandboxStatus::Running, Vec::new()));
+        let runtime = runtime_with(&store, backend.clone());
+        assert!(
+            runtime
+                .release_workflow_session_sandbox(&thread_key, "other-run")
+                .await
+                .is_err()
+        );
+        let execution = store
+            .create_execution(&thread_key, None, json!({}))
+            .await
+            .unwrap()
+            .execution;
+        assert!(
+            runtime
+                .release_workflow_session_sandbox(&thread_key, "run-owner")
+                .await
+                .is_err()
+        );
+        store
+            .mark_execution_running(&execution.execution_id)
+            .await
+            .unwrap();
+        assert!(
+            runtime
+                .release_workflow_session_sandbox(&thread_key, "run-owner")
+                .await
+                .is_err()
+        );
+        assert!(backend.stopped().is_empty());
+        store
+            .complete_execution(&execution.execution_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            runtime
+                .release_workflow_session_sandbox(&thread_key, "run-owner")
+                .await
+                .unwrap(),
+            Some("sbx-owned-agent".to_owned())
+        );
+        assert_eq!(backend.stopped(), vec!["sbx-owned-agent".to_owned()]);
+        assert!(!is_referenced(&store, "sbx-owned-agent").await);
+        assert_eq!(
+            runtime
+                .release_workflow_session_sandbox(&thread_key, "run-owner")
+                .await
+                .unwrap(),
+            None
         );
         reset_test_store(&store).await;
     }

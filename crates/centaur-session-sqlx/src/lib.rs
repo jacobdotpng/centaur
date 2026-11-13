@@ -1603,22 +1603,47 @@ impl PgSessionStore {
         &self,
         thread_key: &ThreadKey,
     ) -> Result<Option<String>, SessionStoreError> {
+        self.detach_idle_session_sandbox_for_owner(thread_key, None)
+            .await
+    }
+
+    /// Release only a session owned by this workflow run. Public session
+    /// release continues to reject workflow-owned sessions.
+    pub async fn detach_idle_workflow_session_sandbox(
+        &self,
+        thread_key: &ThreadKey,
+        workflow_run_id: &str,
+    ) -> Result<Option<String>, SessionStoreError> {
+        self.detach_idle_session_sandbox_for_owner(thread_key, Some(workflow_run_id))
+            .await
+    }
+
+    async fn detach_idle_session_sandbox_for_owner(
+        &self,
+        thread_key: &ThreadKey,
+        workflow_run_id: Option<&str>,
+    ) -> Result<Option<String>, SessionStoreError> {
         let mut tx = self.pool.begin().await?;
-        let (sandbox_id, workflow_owned) = sqlx::query_as::<_, (Option<String>, bool)>(
-            r#"
-            select sandbox_id, coalesce(metadata->>'workflow_owned_thread' = 'true', false)
+        let (sandbox_id, workflow_owned, owner) =
+            sqlx::query_as::<_, (Option<String>, bool, Option<String>)>(
+                r#"
+            select sandbox_id, coalesce(metadata->>'workflow_owned_thread' = 'true', false),
+                   metadata->>'workflow_run_id'
             from sessions
             where thread_key = $1
             for update
             "#,
-        )
-        .bind(thread_key.as_str())
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or_else(|| SessionStoreError::NotFound {
-            thread_key: thread_key.as_str().to_owned(),
-        })?;
-        if workflow_owned {
+            )
+            .bind(thread_key.as_str())
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| SessionStoreError::NotFound {
+                thread_key: thread_key.as_str().to_owned(),
+            })?;
+        if match workflow_run_id {
+            Some(expected) => !workflow_owned || owner.as_deref() != Some(expected),
+            None => workflow_owned,
+        } {
             return Err(SessionStoreError::WorkflowOwnedSandbox {
                 thread_key: thread_key.as_str().to_owned(),
             });

@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "services" / "workflow-python"))
 
-from workflows.full_send import Input, handler
+from workflows.full_send import AGENT_DEFAULTS, Input, handler
 
 PR = "https://github.com/example/project/pull/12"
 SHA = "a" * 40
@@ -58,6 +58,9 @@ def context(agents, reviews=None):
 
 
 class FullSendTests(unittest.TestCase):
+    def test_agents_release_sandboxes(self):
+        self.assertIs(AGENT_DEFAULTS["release_sandbox_after_turn"], True)
+
     def test_ship_it_required_before_any_side_effect(self):
         for changes in [{"ship_it": "go ahead"}, {"scope": ""}, {"deployment": ""},
                         {"confirmation_ts": ""}, {"channel": "U12345678"}]:

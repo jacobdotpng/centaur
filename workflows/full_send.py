@@ -14,6 +14,7 @@ WORKFLOW_NAME = "full_send"
 WORKFLOW_PRINCIPAL = True
 WORKFLOW_STARTERS = {"admin", "console", "principal", "ingress"}
 AGENT_DEFAULTS = {
+    "release_sandbox_after_turn": True,
     "principal": "workflow-full-send", "harness": "codex",
     "model": "gpt-6.1-sol", "reasoning": "high",
 }
@@ -96,6 +97,8 @@ live observability tools. Never substitute branch heads or cached evidence.
 Read applicable AGENTS.md and the actual release configuration. Recover existing
 PRs, commits, merges and releases before retrying any mutation. If access or a
 pipeline gate blocks progress, return status blocked with the specific reason.
+This agent's sandbox is released after its turn. Push all commits and save any
+required artifacts externally before returning; later steps use fresh sandboxes.
 Return only a JSON object. Evidence must come from successful live queries.
 """
 

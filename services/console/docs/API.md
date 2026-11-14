@@ -1705,3 +1705,37 @@ Notes on the proxy-sync payload, which differs from the REST representation:
 - Each source is flattened: its `config` keys are merged up and tagged with `type` (the `source_type`). A `control_plane` source delivers its decrypted value inline as `value`.
 - Rules use `methods` here, versus `http_methods` in the REST API. Blank rule fields are omitted.
 - The top-level `rules`, `mcp`, and `ingest_token` fields the proxy also understands are intentionally omitted; iron-control has no models for them. Rules are carried per secret instead.
+
+### Slack channel default skill
+
+An active Console admin in an authorized Slack admin surface can select a
+repository skill for a channel without redeploying:
+
+```sh
+centaur-console admin set-default-skill slack-channel-CHANNEL_ID --skill full-send
+centaur-console admin principal slack-channel-CHANNEL_ID
+centaur-console admin set-default-skill slack-channel-CHANNEL_ID --skill qa
+centaur-console admin set-default-skill slack-channel-CHANNEL_ID --clear
+```
+
+`PATCH /api/v1/sandbox/admin/principals/:id/default_skill` accepts
+`{"data":{"skill":"full-send"}}`; use JSON `null` to clear. The principal must
+be a Slack channel. The response and ordinary principal inspection expose the
+reference in `labels.slack_default_skill`. Other labels, roles, and grants are
+preserved. This endpoint uses the existing sandbox admin authentication; selecting
+a skill grants neither tool access nor implementation approval.
+
+The session runtime reads the channel principal on every normal request and
+active-thread steer, including existing threads and warm sandboxes. Each user
+turn receives the current selection (or an explicit reset when cleared), directs
+the agent to refresh and resolve the repository skill on that turn, and requires
+it to stop if resolution fails. Instructions remain in the existing skill;
+selection does not copy its content or introduce an approval setting. For
+`full-send`, the current full-send skill owns alignment and the requester's
+explicit Ship it gate. Skill availability remains limited by the sandbox's
+existing access. DMs and other platforms do not inherit channel defaults.
+
+Deploy the source implementation before selecting a default. No workflow
+definition, activation allowlist, automatic trigger, or principal grant is added
+by this setting. Verify a harmless request, an existing-thread follow-up, and
+switch/clear behavior after deployment before claiming live activation.

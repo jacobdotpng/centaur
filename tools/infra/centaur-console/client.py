@@ -361,6 +361,15 @@ class ConsoleClient:
             method="DELETE",
         )
 
+    def admin_set_default_skill(self, principal: str, skill: str | None) -> dict[str, Any]:
+        """Select a channel's repository skill, or clear it with None."""
+        principal_id = self._admin_principal_id(principal)
+        return self._admin_object(
+            f"{SANDBOX_ADMIN_PRINCIPALS_PATH}/{principal_id}/default_skill",
+            method="PATCH",
+            json={"data": {"skill": skill}},
+        )
+
     def admin_set_sandbox_access(self, principal: str, **capabilities: Any) -> dict[str, Any]:
         """Update selected sandbox capabilities, such as sandbox_sessions_read_enabled."""
         data = {key: value for key, value in capabilities.items() if value is not None}

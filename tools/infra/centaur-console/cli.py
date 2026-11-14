@@ -477,6 +477,22 @@ def admin_remove_slack_permission(
     )
 
 
+@admin_app.command("set-default-skill")
+def admin_set_default_skill(
+    principal: str = typer.Argument(..., help="Slack channel principal OID or foreign ID"),
+    skill: str | None = typer.Option(None, "--skill", help="Exact repository skill name, e.g. full-send"),
+    clear: bool = typer.Option(False, "--clear", help="Clear the channel default"),
+    url: str | None = URL_OPTION,
+    bearer_token: str | None = BEARER_TOKEN_OPTION,
+) -> None:
+    """Change or clear a channel default without changing permissions."""
+    if clear == (skill is not None):
+        raise typer.BadParameter("provide either --skill NAME or --clear")
+    with get_client(url=url, bearer_token=bearer_token) as client:
+        result = client.admin_set_default_skill(principal, skill)
+    console.print_json(json.dumps({"data": result}, default=str))
+
+
 @admin_app.command("set-sandbox-access")
 def admin_set_sandbox_access(
     principal: str = typer.Argument(..., help="Principal OID or foreign ID"),

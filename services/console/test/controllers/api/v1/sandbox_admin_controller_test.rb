@@ -6,6 +6,39 @@ class Api::V1::SandboxAdminControllerTest < ActionDispatch::IntegrationTest
     @role = roles(:acme_admin_role)
   end
 
+  test "channel skill defaults are mutable references with no permission changes" do
+    before_labels = @channel.labels.to_h.dup
+    before_roles = @channel.role_ids
+    with_token(dm_proxy_for(users(:acme_admin))) do |headers|
+      [ "full-send", "qa", nil ].each do |skill|
+        patch "/api/v1/sandbox/admin/principals/#{@channel.oid}/default_skill",
+              params: { data: { skill: skill } }, headers: headers, as: :json
+        assert_response :ok
+        if skill.nil?
+          assert_nil @channel.reload.labels["slack_default_skill"]
+        else
+          assert_equal skill, @channel.reload.labels["slack_default_skill"]
+        end
+        assert_equal before_roles, @channel.role_ids
+      end
+      assert_equal before_labels, @channel.labels
+      patch "/api/v1/sandbox/admin/principals/#{@channel.oid}/default_skill",
+            params: { data: { skill: "full-send; execute" } }, headers: headers, as: :json
+      assert_response :bad_request
+      patch "/api/v1/sandbox/admin/principals/#{principals(:acme_user_alice).oid}/default_skill",
+            params: { data: { skill: "full-send" } }, headers: headers, as: :json
+      assert_response :bad_request
+    end
+  end
+
+  test "non-admins cannot change channel default skills" do
+    with_token(dm_proxy_for(users(:member_user))) do |headers|
+      patch "/api/v1/sandbox/admin/principals/#{@channel.oid}/default_skill",
+            params: { data: { skill: "full-send" } }, headers: headers, as: :json
+      assert_response :forbidden
+    end
+  end
+
   test "an admin's Slack DM sandbox finds a channel principal and changes its roles" do
     proxy = dm_proxy_for(users(:acme_admin))
 

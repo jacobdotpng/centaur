@@ -469,3 +469,16 @@ def test_admin_create_secret_posts_gcp_id_token_documents_to_their_kind_path():
     assert make_client(handler).admin_create_secret("gcp_id_token", data) == {"id": "gid_1"}
 
     assert requests == [("POST", SANDBOX_ADMIN_GCP_ID_TOKEN_SECRETS_PATH, {"data": data})]
+
+
+@pytest.mark.parametrize("skill", ["full-send", "qa", None])
+def test_admin_set_default_skill_selects_switches_and_clears(skill):
+    def handler(request):
+        if request.method == "GET":
+            return json_response({"data": {"id": "prn_123"}})
+        assert request.method == "PATCH"
+        assert request.url.path == f"{SANDBOX_ADMIN_PRINCIPALS_PATH}/prn_123/default_skill"
+        assert json.loads(request.content) == {"data": {"skill": skill}}
+        return json_response({"data": {"id": "prn_123", "labels": {}}})
+
+    make_client(handler).admin_set_default_skill("prn_123", skill)

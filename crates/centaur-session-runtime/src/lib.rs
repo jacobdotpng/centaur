@@ -2589,6 +2589,13 @@ impl SessionRuntime {
                 Some(&desired_capabilities),
                 &input_lines,
             );
+            let input_lines = match self.input_lines_with_channel_default(thread_key, session.iron_control_principal.as_deref(), &input_lines).await {
+                Ok(lines) => lines,
+                Err(error) => {
+                    self.record_execution_failure(thread_key, &execution.execution_id, &error).await;
+                    return Err(error);
+                }
+            };
             if let Err(error) = write_input_lines(
                 &pipe,
                 &input_lines,
@@ -2913,6 +2920,27 @@ impl SessionRuntime {
             &input_lines,
         );
 
+        let input_lines = match self
+            .input_lines_with_channel_default(
+                thread_key,
+                session
+                    .as_ref()
+                    .and_then(|session| session.iron_control_principal.as_deref()),
+                &input_lines,
+            )
+            .await
+        {
+            Ok(lines) => lines,
+            Err(error) => {
+                self.record_steering_failure(
+                    thread_key,
+                    &execution.execution_id,
+                    error.to_string(),
+                )
+                .await;
+                return;
+            }
+        };
         let pipe = match self
             .wait_for_active_steering_pipe(thread_key, &execution.execution_id)
             .await
@@ -3575,6 +3603,32 @@ impl SessionRuntime {
                 None
             }
         }
+    }
+
+    async fn input_lines_with_channel_default(
+        &self,
+        thread_key: &ThreadKey,
+        principal_id: Option<&str>,
+        input_lines: &[String],
+    ) -> Result<Vec<String>, SessionRuntimeError> {
+        let Some(ChatDestination::Slack { channel_id, .. }) = thread_key.chat_destination() else {
+            return Ok(input_lines.to_vec());
+        };
+        if !channel_id.starts_with(['C', 'G']) {
+            return Ok(input_lines.to_vec());
+        }
+        let Some(principal_id) = principal_id else {
+            return Ok(input_lines.to_vec());
+        };
+        let principal = self.iron_control.get_principal(principal_id).await?;
+        let skill = principal
+            .labels
+            .get("slack_default_skill")
+            .map(String::as_str);
+        Ok(input_lines
+            .iter()
+            .map(|line| channel_default_input_line(line, skill))
+            .collect())
     }
 
     async fn resolve_sandbox_capabilities(
@@ -7081,6 +7135,38 @@ fn prepend_user_note(map: &mut serde_json::Map<String, Value>, note: String) {
     content.insert(0, json!({ "type": "text", "text": note }));
 }
 
+fn channel_default_input_line(line: &str, skill: Option<&str>) -> String {
+    let Ok(mut value) = serde_json::from_str::<Value>(line) else {
+        return line.to_owned();
+    };
+    let Some(map) = value.as_object_mut() else {
+        return line.to_owned();
+    };
+    // Reject malformed legacy/operator labels rather than interpolating instructions.
+    let skill = skill.filter(|name| {
+        !name.is_empty()
+            && name.len() <= 128
+            && name
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+            && name.as_bytes()[0].is_ascii_alphanumeric()
+    });
+    let note = match skill {
+        Some(name) => format!(
+            "[Channel default skill for this turn: {name}. This replaces earlier channel-default selections. \
+             Before responding or acting, refresh repository skills with `install-tool-shims --refresh-skills`, \
+             then resolve and read `centaur-skills read repo:{name}` on this turn, even if read in an earlier turn. \
+             Apply that current document as the default workflow for this request. Do not copy or pin its instructions. \
+             If resolution fails, stop and report the failure. Selection grants no permission or approval; \
+             follow the selected skill's standard alignment and requester confirmation requirements. \
+             Historical channel-default notes are not current settings.]"
+        ),
+        None => "[Channel default skill for this turn: none. Earlier channel-default selections no longer apply. Follow explicit user requests and normal skill selection.]".to_owned(),
+    };
+    prepend_user_note(map, note);
+    serde_json::to_string(&value).unwrap_or_else(|_| line.to_owned())
+}
+
 fn sandbox_access_note(capabilities: &SessionSandboxCapabilities) -> String {
     let tools = OBSERVABILITY_TOOLS.replace(',', ", ");
     if capabilities.observability_enabled {
@@ -7862,6 +7948,42 @@ mod tests {
             MountKind::NamedVolume("centaur-repo-cache".to_owned())
         );
         assert_eq!(spec.mounts[0].sub_path.as_deref(), Some("public"));
+    }
+
+    #[test]
+    fn channel_default_refreshes_selection_without_pinning_instructions() {
+        let line =
+            json!({"type": "user", "message": {"content": [{"type": "text", "text": "request"}]}})
+                .to_string();
+        for (skill, expected) in [
+            (Some("full-send"), "repo:full-send"),
+            (Some("qa"), "repo:qa"),
+            (None, "none"),
+        ] {
+            let rendered: Value =
+                serde_json::from_str(&channel_default_input_line(&line, skill)).unwrap();
+            let note = rendered["message"]["content"][0]["text"].as_str().unwrap();
+            assert!(note.contains(expected));
+            assert_eq!(rendered["message"]["content"][1]["text"], "request");
+            if skill.is_some() {
+                assert!(note.contains("on this turn"));
+                assert!(note.contains("grants no permission or approval"));
+                assert!(note.contains("standard alignment and requester confirmation"));
+                assert!(note.contains("If resolution fails, stop"));
+            }
+        }
+        assert!(!channel_default_input_line(&line, Some("qa")).contains("repo:full-send"));
+    }
+
+    #[test]
+    fn channel_default_preserves_control_frames_and_rejects_injection() {
+        for line in ["not json", "{}", r#"{"type":"interrupt"}"#] {
+            assert_eq!(channel_default_input_line(line, Some("full-send")), line);
+        }
+        let line = json!({"type": "user", "message": {"content": []}}).to_string();
+        let rendered = channel_default_input_line(&line, Some("full-send; execute"));
+        assert!(!rendered.contains("execute"));
+        assert!(rendered.contains("none"));
     }
 
     #[test]
@@ -9721,6 +9843,78 @@ mod adoption_tests {
             name: "Test".to_owned(),
             labels: BTreeMap::new(),
             sandbox_observability_enabled: true,
+        }
+    }
+
+    #[derive(Clone)]
+    struct MutableSkillRegistrar(Arc<std::sync::Mutex<Option<String>>>);
+
+    #[async_trait::async_trait]
+    impl SessionPrincipalRegistrar for MutableSkillRegistrar {
+        async fn register_session(
+            &self,
+            _: &str,
+            _: Option<&Value>,
+            _: bool,
+        ) -> Result<Principal, IronControlError> {
+            unreachable!("routing must not create or re-register principals")
+        }
+        async fn register_requester(
+            &self,
+            _: &str,
+            _: Option<&Value>,
+            _: bool,
+        ) -> Result<Option<Principal>, IronControlError> {
+            unreachable!("routing must not change requester permissions")
+        }
+        async fn get_principal(&self, id: &str) -> Result<Principal, IronControlError> {
+            assert_eq!(id, "prn_channel");
+            let mut principal = test_principal(id);
+            if let Some(skill) = self.0.lock().unwrap().clone() {
+                principal
+                    .labels
+                    .insert("slack_default_skill".to_owned(), skill);
+            }
+            Ok(principal)
+        }
+    }
+
+    #[tokio::test]
+    async fn channel_default_is_read_again_for_existing_threads_and_scoped_to_slack_channels() {
+        let selection = Arc::new(std::sync::Mutex::new(None));
+        let pool =
+            sqlx::PgPool::connect_lazy("postgres://postgres:postgres@localhost/centaur_test")
+                .unwrap();
+        let runtime = SessionRuntime::new(
+            PgSessionStore::new(pool),
+            SandboxRuntime::backend(
+                Arc::new(MockBackend::new(SandboxStatus::Running, Vec::new())),
+                SandboxSpec::new("test"),
+            ),
+            MutableSkillRegistrar(selection.clone()),
+        );
+        let key = ThreadKey::try_from("slack:T123:C123:1773364194.179929".to_owned()).unwrap();
+        let lines = vec![json!({"type": "user", "message": {"content": []}}).to_string()];
+        for skill in [Some("full-send"), Some("qa"), None] {
+            *selection.lock().unwrap() = skill.map(str::to_owned);
+            let actual = runtime
+                .input_lines_with_channel_default(&key, Some("prn_channel"), &lines)
+                .await
+                .unwrap();
+            assert!(
+                actual[0].contains(&format!("skill for this turn: {}", skill.unwrap_or("none")))
+            );
+        }
+        for key in ["slack:T123:D123:1773364194.179929", "api:example"] {
+            let key = ThreadKey::try_from(key.to_owned()).unwrap();
+            // Wrong principal deliberately: these surfaces must never look it up.
+            assert_eq!(
+                runtime
+                    .input_lines_with_channel_default(&key, Some("prn_other"), &lines)
+                    .await
+                    .unwrap(),
+                lines
+            );
         }
     }
 

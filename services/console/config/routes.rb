@@ -282,6 +282,7 @@ Rails.application.routes.draw do
             member do
               get "effective_grants", action: :effective_grants
               patch "sandbox_access", action: :update_sandbox_access
+              patch "default_skill", action: :update_default_skill
               post "slack_channel_permissions", action: :upsert_slack_channel_permission
               delete "slack_channel_permissions/:channel_id", action: :destroy_slack_channel_permission
             end

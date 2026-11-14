@@ -110,6 +110,27 @@ module Api
             head :no_content
           end
 
+          # A reference only: changing selection never grants tools or approval.
+          def update_default_skill
+            principal = Principal.find_by_oid!(params[:id])
+            unless principal.kind == "slack_channel" && principal.slack_channel_id.to_s.match?(/\A[CG][A-Z0-9]+\z/)
+              raise ActionController::BadRequest, "default skills require a Slack channel principal"
+            end
+            unless data_params.key?(:skill)
+              raise ActionController::BadRequest, "provide skill (null to clear)"
+            end
+            skill = data_params[:skill]
+            unless skill.nil? || (skill.is_a?(String) && skill.match?(/\A[a-z0-9][a-z0-9-]{0,127}\z/))
+              raise ActionController::BadRequest, "skill must be an exact repository skill name or null"
+            end
+            principal.with_lock do
+              labels = principal.labels.to_h.dup
+              skill.nil? ? labels.delete("slack_default_skill") : labels["slack_default_skill"] = skill
+              principal.update!(labels: labels)
+            end
+            render json: { data: record_payload(principal) }
+          end
+
           private
 
           # Matches api-rs's slugify for workflow principal foreign IDs.

@@ -14,7 +14,11 @@ class Api::V1::SandboxAdminControllerTest < ActionDispatch::IntegrationTest
         patch "/api/v1/sandbox/admin/principals/#{@channel.oid}/default_skill",
               params: { data: { skill: skill } }, headers: headers, as: :json
         assert_response :ok
-        assert_equal skill, @channel.reload.labels["slack_default_skill"]
+        if skill.nil?
+          assert_nil @channel.reload.labels["slack_default_skill"]
+        else
+          assert_equal skill, @channel.reload.labels["slack_default_skill"]
+        end
         assert_equal before_roles, @channel.role_ids
       end
       assert_equal before_labels, @channel.labels

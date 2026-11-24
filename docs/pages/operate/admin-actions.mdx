@@ -1,0 +1,76 @@
+# Administrative action approvals
+
+Use Console administration tools directly from an authorized conversation for an
+existing setting. A background agent keeps its own identity: it requests a typed
+action through the broker instead of inheriting the Slack channel's administrator.
+This mechanism is shared by Python workflows, including child workflows, Full Send
+and agentic review. Name agent turns uniquely within a workflow so replay can restore
+the same agent/session identifiers.
+
+Permission metadata reads are allowed through a currently verified originating
+administrator, without granting the worker direct administration or exposing values.
+Setting changes require an exact approval or matching standing policy.
+
+When a supported admin endpoint refuses a worker, Console automatically records
+an access request and posts a menu in its originating trusted channel/thread.
+The worker ends its turn. The durable runner releases that agent's sandbox when
+`release_sandbox_after_turn` is set, waits for a decision and resumes the same run.
+Previously checkpointed work and the agent session are preserved.
+
+- **Approve once:** apply only the exact operation, target and parameters in this request.
+- **Allow matching workflow action:** save an exact rule for this workflow and originating
+  principal. It does not authorize another target, parameter set or workflow.
+- **Details:** show the scope without approving it.
+- **Deny:** leave settings unchanged and stop the blocked step with an explanation.
+
+Mentioned replies `approve once aar_ID`, `details aar_ID` and `deny aar_ID` in the
+original thread provide a deterministic alternative to buttons. They bypass model
+interpretation. Standing approval requires the explicit menu choice and confirmation.
+
+## Tool commands
+
+```sh
+centaur-console request-action principal.default_skill slack-channel-c12345678 \
+  --arguments '{"skill":"full-send"}'
+centaur-console action-status aar_REQUEST
+centaur-console admin action-policies
+centaur-console admin revoke-action-policy aap_POLICY
+```
+
+The registry supports principal metadata/role/grant reads, channel default skills,
+sandbox observability/session/workflow/repo-cache flags, principal role assignments,
+credential-handle grants/revocation and Slack channel permissions. Credential values,
+arbitrary HTTP calls, role credential mutation, AWS administration and provider OAuth
+consent are outside this registry. Unsupported actions explain that a reviewed typed
+handler or provider authorization is needed; a generic 403 never broadens credentials.
+
+The `admin_action` workflow performs one typed operation with the same shared broker.
+It requires a managed workflow principal and model access in deployment configuration.
+It has no GitHub or production deployment grant by default. It reports success only
+from api-rs-attached Console receipts, never from a model's claim that it completed.
+Resolve the target principal OID through authorized tools before starting it.
+
+## Authorization and durability
+
+api-rs derives the originating principal from the authenticated workflow caller and
+propagates it to child workflows. The trusted session runtime writes that identity,
+task, run and agent identifiers onto the assigned proxy. Sandbox input cannot choose
+its origin. Console rechecks the live linked administrator, trusted-channel/bot
+membership, the actual Slack actor's current membership, the exact card or thread,
+and that the originating task is still active. For a linked administrator's DM,
+Console verifies the actual DM recipient with Slack and only that person may approve. Scheduled and webhook jobs without
+a verified Slack origin cannot borrow a human administrator.
+
+Slackbot verifies the raw Slack signature and workspace before forwarding decisions.
+Only its ingress capability or the control plane can use the decision route;
+sandbox workflow-write permission is insufficient. Console locks each request and
+commits the typed mutation and readback receipt in one database transaction. Duplicate
+clicks return the recorded outcome. Requests expire after 30 minutes. The workflow
+wait polls durable state at ten-second intervals without occupying a worker permit.
+A denied, expired or failed action never starts a replacement workflow.
+
+Configure Slack interactivity to use the same signed ingress used for events. For
+sleeping installations, the always-on gateway must acknowledge and durably queue
+form-encoded interactions before waking the host. Do not expose Console publicly.
+A Helm rollback cannot undo an already-applied action or its database migration;
+inspect action receipts and reverse a setting through another authorized operation.

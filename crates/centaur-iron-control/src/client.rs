@@ -443,6 +443,29 @@ impl IronControlClient {
         expect_success(resp, Method::DELETE, &path).await
     }
 
+    /// Service-only approval records for one server-owned workflow agent.
+    pub async fn admin_actions(&self, task_id: &str, agent_key: &str) -> Result<Vec<Value>> {
+        let path = format!(
+            "{API_PREFIX}/admin_actions?task_id={}&agent_key={}",
+            urlencoding::encode(task_id),
+            urlencoding::encode(agent_key)
+        );
+        let response = self.send(Method::GET, &path, None::<&Value>).await?;
+        decode_data(response, Method::GET, &path).await
+    }
+
+    pub async fn decide_admin_action(&self, id: &str, decision: &Value) -> Result<Value> {
+        self.write(
+            Method::POST,
+            &format!(
+                "{API_PREFIX}/admin_actions/{}/decide",
+                urlencoding::encode(id)
+            ),
+            decision,
+        )
+        .await
+    }
+
     // ----- proxies ---------------------------------------------------------
 
     /// Register a proxy owned by ``principal_id``, optionally bound to the

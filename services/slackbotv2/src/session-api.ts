@@ -566,6 +566,7 @@ export async function forwardToSessionApi(
 }
 
 export const WORKFLOW_ACTION_PREFIX = 'centaur.workflow.action:'
+export const ADMIN_ACTION_PREFIX = 'centaur.admin-action:'
 /** Emitted by api-rs once a follow-up message reaches an active execution. */
 export const SESSION_STEERING_DELIVERED_EVENT = 'session.steering_delivered'
 /** Emitted by api-rs when a follow-up could not reach the still-running execution. */
@@ -573,10 +574,62 @@ export const SESSION_STEERING_FAILED_EVENT = 'session.steering_failed'
 /** Emitted by api-rs while a long execution is still running. */
 export const SESSION_PROGRESS_UPDATE_EVENT = 'session.progress_update'
 
+export async function decideAdminAction(
+  options: SlackbotV2Options, id: string, decision: JsonObject
+): Promise<JsonObject> {
+  const response = await fetchWithTimeout(options.fetch ?? globalThis.fetch,
+    new URL(`/api/admin-actions/${encodeURIComponent(id)}/decide`, ensureTrailingSlash(options.apiUrl)),
+    { method: 'POST', headers: apiHeaders(options), body: JSON.stringify(decision) },
+    sessionApiTimeoutMs(options), 'resolve administrative access')
+  const body: unknown = await response.json()
+  if (!response.ok) {
+    if (response.status === 400 || response.status === 403) {
+      return { outcome: 'denied', message: isJsonObject(body) && typeof body.error === 'string' ? body.error : 'This access request could not be approved. Check that it is current and you are a member of its originating trusted channel; no new authority was granted.' }
+    }
+    throw new Error(`Access resolution service returned HTTP ${response.status}; retry this decision.`)
+  }
+  return { outcome: 'accepted', ...(isJsonObject(body) ? body : {}) }
+}
+
+/** Called only after Slack signature and workspace verification, before model dispatch. */
+export async function dispatchAdminActionReply(options: SlackbotV2Options, payload: Record<string, unknown> | null): Promise<boolean> {
+  if (payload?.type !== 'event_callback' || !isJsonObject(payload.event)) return false
+  const event = payload.event
+  if (event.bot_id || event.subtype || typeof event.user !== 'string' || typeof event.text !== 'string'
+    || !options.botUserId || !event.text.includes(`<@${options.botUserId}>`)) return false
+  const text = event.text.replace(`<@${options.botUserId}>`, '').trim()
+  const match = text.match(/^(approve once|deny|details) (aar_[A-Za-z0-9]+)(?:\s+Sent using[\s\S]*)?$/i)
+  if (!match) return false
+  const result = await decideAdminAction(options, match[2]!, {
+    decision: match[1]!.toLowerCase() === 'approve once' ? 'once' : match[1]!.toLowerCase(),
+    user_id: event.user, team_id: stringValue(payload.team_id) ?? '',
+    channel_id: stringValue(event.channel) ?? '', thread_ts: stringValue(event.thread_ts) ?? ''
+  })
+  if (result.outcome === 'denied') {
+    const feedback = await fetchWithTimeout(options.fetch ?? globalThis.fetch,
+      new URL('chat.postEphemeral', ensureTrailingSlash(options.slackApiUrl ?? 'https://slack.com/api')),
+      { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${options.botToken}` },
+        body: JSON.stringify({ channel: event.channel, user: event.user, thread_ts: event.thread_ts, text: result.message }) },
+      slackApiTimeoutMs(options), 'report access decision')
+    await feedback.body?.cancel()
+  }
+  return true
+}
+
 export async function dispatchSlackBlockAction(
   options: SlackbotV2Options,
   payload: SlackbotV2BlockActionPayload
 ): Promise<JsonObject | undefined> {
+  if (payload.action_id.startsWith(ADMIN_ACTION_PREFIX)) {
+    const match = payload.action_id.slice(ADMIN_ACTION_PREFIX.length).match(/^(aar_[A-Za-z0-9]+):(once|workflow|deny|details)$/)
+    if (!match || payload.value !== match[1] || !payload.user_id || !payload.team_id || !payload.channel_id || !payload.message_ts) {
+      throw new Error('Invalid administrative approval identity')
+    }
+    return decideAdminAction(options, match[1]!, {
+      decision: match[2]!, user_id: payload.user_id, team_id: payload.team_id,
+      channel_id: payload.channel_id, message_ts: payload.message_ts
+    })
+  }
   const action = `dispatch Slack block action ${payload.action_id}`
   const workflowAction = payload.action_id.startsWith(WORKFLOW_ACTION_PREFIX)
   let body: JsonObject = { event_name: `slack.block_action.${payload.action_id}`, payload }

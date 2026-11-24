@@ -497,6 +497,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn administrative_decisions_cannot_be_forged_by_sandbox_tokens() {
+        for (token, expected) in [
+            (principal_token("prn_workflow"), StatusCode::FORBIDDEN),
+            (
+                "test-slackbot-key".to_owned(),
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+        ] {
+            let response = build_router_with_app_state(AppState::unready(test_auth_with_slack()))
+                .oneshot(
+                    Request::builder()
+                        .method(Method::POST)
+                        .uri("/api/admin-actions/aar_Test/decide")
+                        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(r#"{"decision":"once","user_id":"UFORGED"}"#))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected);
+        }
+    }
+
+    #[tokio::test]
     async fn workflow_actions_require_trusted_ingress_capability() {
         let mut message = json!({"channel": "C1", "blocks": [{"type": "actions", "elements": [{
             "type": "button", "action_id": "centaur.workflow.action:00000000-0000-0000-0000-000000000001:approve",

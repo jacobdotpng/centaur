@@ -277,6 +277,7 @@ pub fn build_router_with_app_state(state: AppState) -> Router {
             "/api/workflows/runs/{run_id}/cancel",
             post(cancel_workflow_run),
         )
+        .route("/api/admin-actions/{id}/decide", post(decide_admin_action))
         .route("/api/workflows/events", post(emit_workflow_event))
         .route(
             "/api/workflows/actions/invoke",
@@ -606,6 +607,9 @@ fn route_access(method: &Method, route: &str) -> Option<RouteAccess> {
             capability(Capability::WorkflowsWrite)
         }
         (&Method::POST, "/api/workflows/events") => capability(Capability::WorkflowsEvents),
+        (&Method::POST, "/api/admin-actions/{id}/decide") => {
+            capability(Capability::WorkflowsActions)
+        }
         (&Method::POST, "/api/workflows/actions/invoke") => {
             capability(Capability::WorkflowsActions)
         }
@@ -2644,6 +2648,20 @@ async fn ingest_google_docs_sync_batch(
             "checkpoint": request.checkpoint.is_some(),
         }
     })))
+}
+
+async fn decide_admin_action(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(decision): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    // WorkflowsActions belongs only to trusted Slack ingress / control plane,
+    // never to a sandbox JWT, even if WorkflowsWrite is enabled.
+    Ok(Json(
+        workflow_runtime(&state)?
+            .decide_admin_action(&id, &decision)
+            .await?,
+    ))
 }
 
 async fn invoke_workflow_button(

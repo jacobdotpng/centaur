@@ -215,6 +215,29 @@ class ConsoleClient:
             )
         return result
 
+    def action_policies(self) -> list[dict[str, Any]]:
+        return self._admin_list("/api/v1/sandbox/admin/action_policies")
+
+    def revoke_action_policy(self, policy_id: str) -> None:
+        self._admin_request(f"/api/v1/sandbox/admin/action_policies/{quote(policy_id, safe='')}", method="DELETE")
+
+    def request_action(self, operation: str, target: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        response = self.client.post("/api/v1/sandbox/admin_actions", json={"data": {
+            "operation": operation, "target": target, "arguments": arguments,
+        }})
+        response.raise_for_status()
+        result = response.json()["data"]
+        if result["status"] == "waiting_for_access":
+            raise RuntimeError(f"ADMIN_APPROVAL_REQUIRED {result['id']}: Approval menu posted. End this turn; the same workflow will resume after the decision.")
+        if result["status"] != "completed":
+            raise RuntimeError(f"Access request {result['id']} {result['status']}: {result.get('error')}")
+        return result
+
+    def action_status(self, request_id: str) -> dict[str, Any]:
+        response = self.client.get(f"/api/v1/sandbox/admin_actions/{quote(request_id, safe='')}")
+        response.raise_for_status()
+        return response.json()["data"]
+
     def admin_principals(self, slack_channel_id: str | None = None) -> list[dict[str, Any]]:
         """List principals, or only those bound to a Slack channel. Console admins only."""
         if slack_channel_id:
@@ -252,8 +275,10 @@ class ConsoleClient:
             self._admin_ref_path(SANDBOX_ADMIN_PRINCIPALS_PATH, principal, "prn_")
         )
         path = f"{SANDBOX_ADMIN_PRINCIPALS_PATH}/{result['id']}"
-        result["roles"] = self._admin_list(f"{path}/roles")
-        result["grants"] = self._admin_list_all(f"{path}/grants")
+        if "roles" not in result:
+            result["roles"] = self._admin_list(f"{path}/roles")
+        if "grants" not in result:
+            result["grants"] = self._admin_list_all(f"{path}/grants")
         return result
 
     def admin_effective_grants(self, principal: str) -> list[dict[str, Any]]:
@@ -408,7 +433,7 @@ class ConsoleClient:
     def _admin_secret(self, secret: str) -> dict[str, Any]:
         matches = [
             row
-            for row in self.admin_secrets()
+            for row in self.admin_secrets(query=secret)
             if secret in (row.get("id"), row.get("foreign_id"), row.get("name"))
         ]
         if len(matches) != 1:
@@ -485,6 +510,20 @@ class ConsoleClient:
     ) -> dict[str, Any]:
         try:
             response = self.client.request(method, path, params=params, json=json)
+            if response.status_code == 403:
+                envelope = response.json().get("error", {})
+                if isinstance(envelope, dict) and envelope.get("code") == "admin_approval_required":
+                    resolution = envelope.get("resolution", {})
+                    if resolution.get("status") == "completed":
+                        return {"data": resolution["receipt"] if resolution.get("receipt") is not None else {}}
+                    if resolution.get("status") in {"denied", "expired", "failed"}:
+                        raise RuntimeError(f"Access request {resolution.get('id')} {resolution.get('status')}: {resolution.get('error')}")
+                    raise RuntimeError(
+                        f"ADMIN_APPROVAL_REQUIRED {resolution.get('id')}: "
+                        "The approval menu is already in the originating Slack thread. "
+                        "End this turn now; the workflow runner will wait and resume this same run. "
+                        "Do not retry, create a replacement workflow, or request blanket admin access."
+                    )
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
             detail = _response_error_detail(exc.response)

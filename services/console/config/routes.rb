@@ -237,6 +237,9 @@ Rails.application.routes.draw do
         resources :grants, only: %i[index], controller: :grantee_grants
       end
       resources :grants, only: %i[show create destroy]
+      resources :admin_actions, only: :index do
+        post :decide, on: :member
+      end
       resources :api_keys, only: %i[index show create destroy]
       resources :proxies, only: %i[index show create update destroy]
       resources :scheduled_tasks, only: %i[show]
@@ -258,6 +261,7 @@ Rails.application.routes.draw do
       # Called from inside sandboxes through their assigned iron-proxy. The
       # proxy injects a short-lived sandbox entitlement JWT scoped to these paths.
       namespace :sandbox do
+        resources :admin_actions, only: %i[create show]
         resource :permissions, only: :show
         resources :oauth_apps, only: :index
         resources :scheduled_tasks, only: %i[index show create update destroy] do
@@ -275,6 +279,7 @@ Rails.application.routes.draw do
         end
         # Permission management from an active Console admin's Slack DM.
         namespace :admin do
+          resources :action_policies, only: %i[index destroy]
           resources :principals, only: %i[index show create] do
             collection do
               get "lookup/:foreign_id", action: :lookup, as: :lookup, constraints: { foreign_id: /[^\/]+/ }

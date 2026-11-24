@@ -95,7 +95,7 @@ async def review_pr(inp: Input, ctx: WorkflowContext, repository: str) -> dict[s
     async def turn(name: str, prompt: str, *, reviewer: bool = False) -> dict[str, Any]:
         async def execute():
             return await ctx.agent_turn(
-                prompt,
+                prompt, name=name,
                 thread_key=f"wf:{ctx.run_id}:agentic-review:{name}",
                 message_id=f"agentic-review:{ctx.run_id}:{name}",
                 principal=AGENT_PRINCIPAL,

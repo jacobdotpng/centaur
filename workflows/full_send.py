@@ -45,6 +45,36 @@ def object_result(result: dict[str, Any]) -> dict[str, Any]:
     return value
 
 
+def slack_text(value: str, limit: int = 240) -> str:
+    """Bound untrusted text, redact common credentials, and neutralize mentions."""
+    value = re.sub(r"\b(?:github_pat_|gh[pousr]_|xox[baprs]-|sk-)[A-Za-z0-9_-]{12,}", "[redacted]", value)
+    value = re.sub(r"(?i)(authorization\s*[:=]\s*)(?:bearer\s+|basic\s+)?[^\s,;]+", r"\1[redacted]", value)
+    value = re.sub(r"(?i)((?:[\w-]*(?:token|password|secret|api[_-]?key)[\w-]*)\s*[=:]\s*)[\"']?[^\s,;\"']+[\"']?", r"\1[redacted]", value)
+    value = re.sub(r"([a-z][a-z0-9+.-]*://)[^\s/@]+:[^\s/@]+@", r"\1[redacted]@", value, flags=re.I)
+    value = re.sub(r"(?i)([?&][^=&\s]*(?:signature|credential|token|secret)[^=&\s]*=)[^&\s]+", r"\1[redacted]", value)
+    value = " ".join(value.split())
+    if len(value) > limit:
+        value = value[:limit-1] + "…"
+    return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def deployment_watch(result: dict[str, Any], repository: str) -> str:
+    pattern = r"https://github\.com/[\w.-]+/[\w.-]+/actions/runs/[1-9]\d*"
+    supplied = result.get("deployment_url")
+    if isinstance(supplied, str) and re.fullmatch(pattern, supplied):
+        return supplied
+    # Older workflow results only have an evidence list. Keep their detail in
+    # the durable result, extracting just a safe link for the Slack notification.
+    links = [url for item in result.get("evidence", []) for url in re.findall(pattern, item)]
+    return links[-1] if links else f"https://github.com/{repository}/actions"
+
+
+class FullSendBlocked(RuntimeError):
+    def __init__(self, result: dict[str, Any]):
+        super().__init__(str(result.get("reason", "Full Send blocked")))
+        self.next_step = result.get("next_step")
+
+
 async def handler(inp: Input, ctx: WorkflowContext) -> dict[str, Any]:
     if (
         type(inp.diagnostics_only) is not bool
@@ -61,6 +91,30 @@ async def handler(inp: Input, ctx: WorkflowContext) -> dict[str, Any]:
         return await ctx.step(name, lambda: ctx.post_to_slack(
             inp.channel, text, thread_ts=inp.thread_ts,
             client_msg_id=f"full-send:{ctx.task_id}:{name}",
+        ))
+
+    pr = ""
+    review_url = ""
+    stage = "Build"
+    confirmed = "Scope approved."
+    status_message = None
+
+    def card(label: str, detail: str) -> str:
+        links = []
+        if pr:
+            links += [f"<{pr}|PR #{pr.rsplit('/', 1)[1]}>", f"<{pr}/checks|Checks>"]
+        if review_url:
+            links.append(f"<{review_url}|Review>")
+        links.append(f"<https://github.com/{inp.repository}/actions|Pipelines>")
+        return (f"*Full Send · {label}*\n{slack_text(inp.scope)}\n{detail}\n"
+                + " · ".join(links) + f"\n_Run `{ctx.run_id}`_")
+
+    async def progress(name: str, label: str, detail: str):
+        if not isinstance(status_message, dict) or not re.fullmatch(r"\d+\.\d+", status_message.get("ts", "")):
+            raise RuntimeError("Slack status message has no valid timestamp")
+        text = card(label, detail)
+        return await ctx.step(f"status_{name}", lambda: ctx.update_slack(
+            inp.channel, status_message["ts"], text, unfurl_links=False, unfurl_media=False,
         ))
 
     diagnostics_url = os.environ.get("CENTAUR_DIAGNOSTICS_URL", "").strip()
@@ -96,7 +150,8 @@ vmetrics query. If no deployment-specific endpoint is configured, use the normal
 live observability tools. Never substitute branch heads or cached evidence.
 Read applicable AGENTS.md and the actual release configuration. Recover existing
 PRs, commits, merges and releases before retrying any mutation. If access or a
-pipeline gate blocks progress, return status blocked with the specific reason.
+pipeline gate blocks progress, return status blocked with the specific reason
+and a next_step describing the concrete repair or evidence needed to resume.
 This agent's sandbox is released after its turn. Push all commits and save any
 required artifacts externally before returning; later steps use fresh sandboxes.
 Return only a JSON object. Evidence must come from successful live queries.
@@ -108,7 +163,7 @@ Return only a JSON object. Evidence must come from successful live queries.
             message_id=f"full-send:{ctx.task_id}:{name}",
         )))
         if result.get("status") == "blocked":
-            raise RuntimeError(str(result.get("reason", "Full send blocked")))
+            raise FullSendBlocked(result)
         return result
 
     preflight_instruction = (
@@ -136,7 +191,7 @@ return {"status":"verified","deployment_revision":"live 40-character config SHA"
         return {"status": "verified", "deployment_revision": revision,
                 "deployment": True, "pipelines": True, "health": True, "logs": True}
 
-    await post("started", f"Full send `{ctx.run_id}` started for `{inp.repository}` after Ship it. Building the agreed scope.")
+    status_message = await post("started", card("Build", "Implementing the agreed change and preparing the PR."))
     try:
         build = await turn("build", f"""Before editing, inspect the agreed deployment pipeline. If a diagnostics API
 is configured, follow this preflight: {preflight_instruction}
@@ -168,7 +223,9 @@ deployed yet: open it now and hold enablement until implementation deployment.
         if not isinstance(pr, str) or not re.fullmatch(
             re.escape(f"https://github.com/{inp.repository}/pull/") + r"[1-9]\d*", pr,
         ):
+            pr = ""
             raise RuntimeError("Build did not return a PR in the agreed repository")
+        confirmed = "PR ready."
 
         # Keep the old result shape valid for other repositories.
         # This deployment's workflow creation contract requires an explicit inventory.
@@ -198,7 +255,8 @@ deployed yet: open it now and hold enablement until implementation deployment.
             ))
 
         for attempt in range(3):
-            await post(f"review_started_{attempt}", f"Running the shared agentic_review workflow on {pr}.")
+            stage = "Review"
+            await progress(f"review_started_{attempt}", stage, "PR ready. Reviewing the change and repairing findings before CI verification.")
             child = await ctx.run_workflow(f"review_{attempt}", "agentic_review", {"pr_url": pr})
             report = child.get("result")
             if not isinstance(report, dict) or report.get("pr_url") != pr or report.get("status") != "clean":
@@ -210,6 +268,13 @@ deployed yet: open it now and hold enablement until implementation deployment.
                 raise RuntimeError("Agentic review has no final reviewed commit") from exc
             if review.get("findings") != [] or not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
                 raise RuntimeError("Agentic review did not verify a clean commit")
+
+            comment = report.get("comment_url")
+            if isinstance(comment, str) and re.fullmatch(re.escape(pr) + r"#issuecomment-[1-9]\d*", comment):
+                review_url = comment
+            confirmed = f"Review passed at `{sha[:12]}`."
+            stage = "CI"
+            await progress(f"ci_started_{attempt}", stage, confirmed + " Waiting for required checks; any code repair gets another review.")
 
             ready = await turn(f"ci_{attempt}", f"""PR: {pr}
 Reviewed head: {sha}. Child review run: {child['run_id']}.
@@ -224,9 +289,14 @@ cancelled or failed checks are not green. If no checks exist, report blocked.
             if not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}", head):
                 raise RuntimeError("CI agent did not return a live head SHA")
             if head != sha:
+                confirmed = "CI repaired the PR; the new commit needs review."
                 continue
             if ready.get("checks_green") is not True:
                 raise RuntimeError("Required CI is not green")
+
+            confirmed = f"Review passed · CI passed at `{sha[:12]}`."
+            stage = "Deploy & verify"
+            await progress(f"ship_started_{attempt}", stage, confirmed + " Following the release pipeline, then checking the live behavior.")
 
             shipped = await turn(f"ship_{attempt}", f"""PR: {pr}
 Workflow enablement companions: {json.dumps([{k: c[k] for k in ("name", "config_pr_url")} for c in companions])}
@@ -262,10 +332,13 @@ revision contains the merge and exercise the agreed acceptance criteria on the
 actual running surface. A merge or published image alone is not shipped.
 Return {{"status":"shipped", "reviewed_sha":"{sha}",
 "merge_sha":"40-character merge SHA", "deployment_revision":"verified revision",
+"summary":"one short sentence describing the verified user-visible result",
+"deployment_url":"exact observed GitHub Actions deployment run URL when available",
 "evidence":["live CI/CD run URL", "deployment and acceptance verification"]}}.
 If you cannot verify deployment, return blocked, even if already merged.
 """)
             if shipped.get("status") == "head_changed":
+                confirmed = "The PR changed before merge; checking the new commit again."
                 continue
             if (
                 shipped.get("status") != "shipped" or shipped.get("reviewed_sha") != sha
@@ -290,9 +363,34 @@ If you cannot verify deployment, return blocked, even if already merged.
             ):
                 raise RuntimeError("Workflow companion enablement deployment is unverified")
             result = {**shipped, "pr_url": pr, "review_run_id": child["run_id"]}
-            await post("shipped", f"Full send shipped: {pr}\nRevision: {shipped['deployment_revision']}\n" + "\n".join(shipped["evidence"]))
+            summary = shipped.get("summary")
+            summary = slack_text(summary if isinstance(summary, str) and summary.strip() else "Deployment and live acceptance checks passed.")
+            watch = deployment_watch(shipped, inp.repository)
+            confirmed = "Deployment and live verification passed."
+            stage = "Completion notice"
+            await progress("shipped", "Shipped", f"{summary}\n<{watch}|Deployment evidence> · Revision `{slack_text(shipped['deployment_revision'], 12)}`")
+            await post("shipped", f":white_check_mark: *Shipped* — <{pr}|PR #{pr.rsplit('/', 1)[1]}>\n{summary}\n<{watch}|Deployment evidence>")
             return result
         raise RuntimeError("Head changed after review three times; stopping before another merge attempt")
     except Exception as exc:
-        await post("blocked", f"Full send `{ctx.run_id}` stopped: {exc}\nInspect this run before resuming; a PR or merge may already exist.")
+        reason = slack_text(str(exc), 400)
+        outcome = ("The change is verified; the completion notice could not be delivered."
+                   if stage == "Completion notice" else "Merge/deployment outcome is not verified by this notice.")
+        detail = f"{reason}\nLast confirmed: {confirmed}\n{outcome}"
+        try:
+            await progress("blocked", f"Blocked at {stage}", detail)
+        except Exception:
+            # Still attempt the terminal notice when editing the status failed.
+            pass
+        link = f" · <{pr}|PR #{pr.rsplit('/', 1)[1]}>" if pr else ""
+        next_step = getattr(exc, "next_step", None)
+        if not isinstance(next_step, str) or not next_step.strip():
+            next_step = {
+                "Build": "Inspect the coding agent failure and recover any pushed PR before retrying.",
+                "Review": "Open the review findings, repair the PR, and rerun review before merging.",
+                "CI": "Open Checks, fix the failed or missing job, and rerun review if the code changes.",
+                "Deploy & verify": "Open Pipelines and the live deployment report; confirm the merge and rollout state before resuming.",
+                "Completion notice": "Resend the completion notice from this verified result; do not redeploy.",
+            }[stage]
+        await post("blocked", f":warning: *Blocked at {stage}*{link}\n{detail}\nNext: {slack_text(next_step)}\nRun `{ctx.run_id}`")
         raise

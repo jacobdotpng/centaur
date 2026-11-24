@@ -38,6 +38,7 @@ def shipped(sha=SHA):
 def context(agents, reviews=None):
     ctx = AsyncMock()
     ctx.run_id, ctx.task_id = "run-1", "task-1"
+    ctx.post_to_slack.return_value = {"channel": "C12345678", "ts": "125.456"}
     ctx.agent_turn.side_effect = [{"status": "completed", "result_text": json.dumps(v)} for v in agents]
     children = iter(reviews or [review()])
     cache = {}
@@ -102,7 +103,7 @@ class FullSendTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(first["review_run_id"], "child-1")
         self.assertEqual(ctx.agent_turn.await_count, 3)
-        self.assertEqual(ctx.post_to_slack.await_count, 3)
+        self.assertEqual(ctx.post_to_slack.await_count, 2)
         self.assertEqual(ctx.run_workflow.call_args.args, ("review_0", "agentic_review", {"pr_url": PR}))
         prompt = ctx.agent_turn.call_args_list[-1].args[0]
         self.assertIn(f"--match-head-commit {SHA}", prompt)
@@ -165,7 +166,7 @@ class FullSendTests(unittest.TestCase):
             ctx = context(agents)
             with self.assertRaises(RuntimeError):
                 asyncio.run(handler(inputs(), ctx))
-            self.assertFalse(any("Full send shipped:" in c.args[1] for c in ctx.post_to_slack.call_args_list))
+            self.assertFalse(any(":white_check_mark: *Shipped*" in c.args[1] for c in ctx.post_to_slack.call_args_list))
 
     def test_three_head_changes_stop(self):
         ctx = context([{"pr_url": PR}] + [{"head_sha": NEW, "checks_green": True}] * 3,
@@ -230,4 +231,4 @@ class WorkflowCompanionTests(unittest.TestCase):
             ctx = self.run_case(self.build(), {**shipped(), 'companion_prs': companions})
             with self.assertRaisesRegex(RuntimeError, 'companion enablement deployment'):
                 asyncio.run(handler(inputs(repository='jacobdotpng/centaur'), ctx))
-            self.assertFalse(any('Full send shipped:' in c.args[1] for c in ctx.post_to_slack.await_args_list))
+            self.assertFalse(any(':white_check_mark: *Shipped*' in c.args[1] for c in ctx.post_to_slack.await_args_list))

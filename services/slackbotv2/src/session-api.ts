@@ -596,9 +596,11 @@ export async function dispatchAdminActionReply(options: SlackbotV2Options, paylo
   if (payload?.type !== 'event_callback' || !isJsonObject(payload.event)) return false
   const event = payload.event
   if (event.bot_id || event.subtype || typeof event.user !== 'string' || typeof event.text !== 'string'
-    || !options.botUserId || !event.text.includes(`<@${options.botUserId}>`)) return false
-  const text = event.text.replace(`<@${options.botUserId}>`, '').trim()
-  const match = text.match(/^(approve once|deny|details) (aar_[A-Za-z0-9]+)(?:\s+Sent using[\s\S]*)?$/i)
+    || !options.botUserId || !/^[UW][A-Z0-9]+$/.test(options.botUserId)) return false
+  const mention = new RegExp(`<@${options.botUserId}(?:\\|[^>\\r\\n]+)?>`)
+  if (!mention.test(event.text)) return false
+  const text = event.text.replace(mention, '').trim()
+  const match = text.match(/^(approve once|deny|details) (aar_[A-Za-z0-9]+)(?:\s+\*?Sent using\*?[\s\S]*)?$/i)
   if (!match) return false
   const result = await decideAdminAction(options, match[2]!, {
     decision: match[1]!.toLowerCase() === 'approve once' ? 'once' : match[1]!.toLowerCase(),

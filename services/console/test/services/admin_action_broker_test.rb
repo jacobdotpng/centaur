@@ -38,6 +38,39 @@ class AdminActionBrokerTest < ActiveSupport::TestCase
     assert_equal @proxy.labels["centaur.workflow_task_id"], request.workflow_task_id
   end
 
+  test "approval menu uses the Slack confirmation schema and persists delivery" do
+    request = create_request
+    payloads = []
+    AdminActionSlack.stub(:api, ->(_method, payload) { payloads << payload; { "ts" => "1234567891.123456" } }) do
+      AdminActionSlack.post!(request)
+    end
+    confirm = payloads.first[:blocks][1][:elements][1][:confirm]
+    assert_equal "Cancel", confirm.fetch(:deny).fetch(:text)
+    assert_not confirm.key?(:cancel)
+    assert_equal "1234567891.123456", request.reload.message_ts
+    assert_equal "waiting_for_access", request.status
+    assert_nil @origin.reload.labels["slack_default_skill"]
+  end
+
+  test "rejected button cards fall back to exact reply choices without applying an action" do
+    request = create_request
+    payloads = []
+    api = lambda do |_method, payload|
+      payloads << payload
+      raise SlackApi::Error.new("invalid blocks", code: "invalid_blocks") if payload.key?(:blocks)
+      { "ts" => "1234567891.123456" }
+    end
+    AdminActionSlack.stub(:api, api) { AdminActionSlack.post!(request) }
+    assert_equal 2, payloads.length
+    assert_not payloads.last.key?(:blocks)
+    assert_includes payloads.last[:text], "approve once #{request.oid}"
+    assert_includes payloads.last[:text], "deny #{request.oid}"
+    assert_equal payloads.first[:client_msg_id], payloads.last[:client_msg_id]
+    assert_equal "1234567891.123456", request.reload.message_ts
+    assert_equal "waiting_for_access", request.status
+    assert_nil @origin.reload.labels["slack_default_skill"]
+  end
+
   test "approval executes once and records the original workflow and actor" do
     request = create_request
     request.update!(message_ts: "1234567891.123456")

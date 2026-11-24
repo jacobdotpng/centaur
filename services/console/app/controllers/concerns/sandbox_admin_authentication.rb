@@ -38,7 +38,9 @@ module SandboxAdminAuthentication
     if current_proxy.labels["centaur.admin_origin_principal"].present?
       AdminActionBroker.origin_admin!(Principal.find_by_oid!(current_proxy.labels["centaur.admin_origin_principal"]))
     end
-    operation = AdminActionOperations.from_http(request.method, request.path, params.to_unsafe_h)
+    operation = if current_proxy.labels["centaur.admin_origin_principal"].present?
+      AdminActionOperations.from_http(request.method, request.path, params.to_unsafe_h)
+    end
     if operation && current_proxy.labels["centaur.admin_origin_principal"].present?
       action = AdminActionBroker.request!(proxy: current_proxy, operation: operation)
       AdminActionSlack.post!(action)

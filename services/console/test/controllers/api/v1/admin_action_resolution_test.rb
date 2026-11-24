@@ -52,4 +52,13 @@ class Api::V1::AdminActionResolutionTest < ActionDispatch::IntegrationTest
       assert_response :forbidden
     end
   end
+  test "a worker without a verified origin is denied before loading grant handles" do
+    @proxy.update!(labels: {})
+    with_env("CENTAUR_JWT_SIGNING_SECRET" => "test-secret") do
+      headers = { "Authorization" => "Bearer #{SandboxEntitlements::Jwt.encode_for_proxy(@proxy)}" }
+      delete "/api/v1/sandbox/admin/grants/grant_Missing", headers: headers
+      assert_response :forbidden
+      assert_equal "admin_scope_required", JSON.parse(response.body).dig("error", "code")
+    end
+  end
 end

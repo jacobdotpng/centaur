@@ -61,6 +61,10 @@ class AdminActionBroker
       end
     end
     request
+  rescue AdminActionOperations::Unsupported, ActiveRecord::RecordNotFound, ActiveRecord::RecordInvalid => e
+    raise unless request&.persisted?
+    request.update!(status: "failed", error_message: "Action could not be applied: #{e.message.to_s.first(500)}. Correct the target or parameters before requesting again.")
+    request
   end
 
   def self.decide!(request:, decision:, user_id:, team_id:, channel_id:, message_ts:, refresh_membership: true)
@@ -112,7 +116,7 @@ class AdminActionBroker
     raise Denied, "Approval expired; no action was applied." if expired
     request
   rescue AdminActionOperations::Unsupported, ActiveRecord::RecordNotFound, ActiveRecord::RecordInvalid => e
-    request.update!(status: "failed", error_message: "The approved action could not be applied: #{e.class.name}. Inspect the target and parameters before requesting a new approval.")
+    request.update!(status: "failed", error_message: "The approved action could not be applied: #{e.message.to_s.first(500)}. Inspect the target and parameters before requesting a new approval.")
     request
   end
 

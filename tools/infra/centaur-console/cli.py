@@ -572,5 +572,36 @@ def health(
         raise typer.Exit(1)
 
 
+
+
+@app.command("request-action")
+def request_action(operation: str, target: str, arguments: str = "{}") -> None:
+    """Request one typed administrative operation, with a Slack approval menu when needed."""
+    with get_client() as client:
+        typer.echo(json.dumps(client.request_action(operation, target, json.loads(arguments)), indent=2))
+
+
+@app.command("action-status")
+def action_status(request_id: str) -> None:
+    """Read the decision and receipt for this execution's scoped access request."""
+    with get_client() as client:
+        typer.echo(json.dumps(client.action_status(request_id), indent=2))
+
+
+@admin_app.command("action-policies")
+def action_policies() -> None:
+    """List exact workflow action approvals owned by this Console administrator."""
+    with get_client() as client:
+        console.print_json(json.dumps(client.action_policies()))
+
+
+@admin_app.command("revoke-action-policy")
+def revoke_action_policy(policy_id: str) -> None:
+    """Revoke a standing workflow action approval immediately."""
+    with get_client() as client:
+        client.revoke_action_policy(policy_id)
+    typer.echo("Standing action approval revoked.")
+
+
 if __name__ == "__main__":
     app()

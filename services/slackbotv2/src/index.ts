@@ -44,6 +44,8 @@ import { slackUserIdForMessage } from './slack-user'
 import {
   collectInitialContext,
   dispatchSlackBlockAction,
+  dispatchAdminActionReply,
+  ADMIN_ACTION_PREFIX,
   fetchWithTimeout,
   forwardToSessionApi,
   harnessRestartPreamble,
@@ -390,7 +392,7 @@ export function createSlackbotV2(options: SlackbotV2Options): SlackbotV2 {
 
   chat.onAction(async event => {
     const payload = slackBlockActionPayload(event)
-    const workflowAction = payload.action_id.startsWith(WORKFLOW_ACTION_PREFIX)
+    const workflowAction = payload.action_id.startsWith(WORKFLOW_ACTION_PREFIX) || payload.action_id.startsWith(ADMIN_ACTION_PREFIX)
     // Workflow starts deduplicate durably using the Slack click identity.
     // A temporary ingress lease must never acknowledge a lost click.
     const dedupeKey = workflowAction ? undefined : slackBlockActionDedupeKey(payload)
@@ -413,14 +415,14 @@ export function createSlackbotV2(options: SlackbotV2Options): SlackbotV2 {
       // The workflow owns the message and its final button state. Successful
       // handoff (including redelivery) only needs Slack's native acknowledgment;
       // a separate success message adds noise before the actual result arrives.
-      if (result?.outcome === 'unavailable' && payload.channel_id) {
+      if ((result?.outcome === 'unavailable' || result?.outcome === 'denied') && payload.channel_id) {
         backgroundWaitUntil(
           withSlackApiTimeout(options, 'post workflow action feedback', () =>
             callSlackApi('chat.postEphemeral', {
               channel: payload.channel_id,
               user: payload.user_id,
               ...(payload.thread_ts ? { thread_ts: payload.thread_ts } : {}),
-              text: 'This request is no longer available.'
+              text: typeof result.message === 'string' ? result.message : 'This request is no longer available.'
             }, {
               apiUrl: options.slackApiUrl,
               fetch: options.fetch as typeof globalThis.fetch | undefined,
@@ -686,6 +688,9 @@ export function createSlackbotV2(options: SlackbotV2Options): SlackbotV2 {
         return new globalThis.Response('ok', { status: 200 })
       }
       const interaction = parseSlackWebhookPayload(rawBody)
+      if (await dispatchAdminActionReply(options, interaction)) {
+        return new globalThis.Response('ok', { status: 200 })
+      }
       // Persist before acknowledging so transient failures can be retried by Slack.
       if (await dispatchWorkflowMessage(options, interaction, workflowTriggers)) {
         return new globalThis.Response('ok', { status: 200 })
@@ -694,7 +699,7 @@ export function createSlackbotV2(options: SlackbotV2Options): SlackbotV2 {
         && Array.isArray(interaction.actions)
         && interaction.actions.some(action => isJsonObject(action)
           && typeof action.action_id === 'string'
-          && action.action_id.startsWith(WORKFLOW_ACTION_PREFIX))
+          && (action.action_id.startsWith(WORKFLOW_ACTION_PREFIX) || action.action_id.startsWith(ADMIN_ACTION_PREFIX)))
       const awaitHandoff = workflowAction || shouldAwaitSlackHandoff(rawBody)
       const handoffTasks: Promise<unknown>[] = []
       const keepAlive = (promise: Promise<unknown>) => {

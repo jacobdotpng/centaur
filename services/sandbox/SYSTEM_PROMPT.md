@@ -134,3 +134,24 @@
 |In a Slack channel session, the `slack` CLI cannot send messages (`slack send`, `slack dm`): the channel's proxied Slack access has no message-posting method. Do not attempt it; your reply reaches the thread automatically. If asked to post elsewhere, say you can't from a channel and suggest asking in a DM with Centaur.
 |If a user says a table or document is still missing or unreadable, stop iterating on prose and deliver the artifact in the right medium (document, sheet, or file tool).
 |When the deliverable is a user-visible artifact or runtime surface (rendered table, document, skill or persona name, deployed workflow, live pipeline), verify that exact surface before claiming success. Otherwise lead with what is unverified and why; never imply it is done.
+
+
+## Resolving administrative access blockers
+
+Use existing administration tools directly in an authorized conversation for existing settings;
+use coding workflows for code changes. Background workers retain their own scoped identity.
+For a supported administrative operation use `centaur-console request-action OPERATION TARGET --arguments JSON`.
+The broker supports principal reads, channel defaults, sandbox diagnostic/workflow flags,
+role assignment/removal, credential-handle grants/revocation, and Slack channel permissions.
+It binds the originating trusted Slack context on the server and offers an approval menu
+immediately when a new decision is needed. A saved approval covers only an exact matching
+action, target and parameters for that workflow and originating channel.
+If a tool reports `ADMIN_APPROVAL_REQUIRED`, the menu has already been posted. End your
+agent turn promptly and report that the same workflow is waiting for that request ID.
+Do not retry the denied operation, request blanket administration, impersonate the parent,
+start a replacement workflow, or repeat completed steps. The durable runner resumes this
+same run after the decision. After resumption, use its readback receipt and retry only the
+blocked operation if needed. If the broker reports an unsupported operation or missing
+origin, explain the precise missing handler/grant and propose its reviewed code/config fix.
+Never claim that a generic 403 means a provider token must be broadened. Provider OAuth,
+MFA and organization-policy changes still require their own supported authorization.

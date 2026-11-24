@@ -111,6 +111,7 @@ pub struct WorkflowRuntime {
 }
 
 struct WorkflowRuntimeInner {
+    actions: IronControlClient,
     client: Client,
     slack_live_client: Client,
     etl_client: Client,
@@ -225,6 +226,7 @@ fn parse_workflow_allowed_names(raw: &str) -> BTreeSet<String> {
 
 #[derive(Clone)]
 struct WorkflowQueueClients {
+    actions: IronControlClient,
     standard: Client,
     slack_live: Client,
     etl: Client,
@@ -647,7 +649,9 @@ impl WorkflowRuntime {
         schedule_client
             .create_queue(Some(WORKFLOW_SCHEDULE_QUEUE), CreateQueueOptions::default())
             .await?;
+        let action_client = workflow_principal_registrar.client.clone();
         let workflow_clients = WorkflowQueueClients {
+            actions: action_client.clone(),
             standard: client.clone(),
             slack_live: slack_live_client.clone(),
             etl: etl_client.clone(),
@@ -877,6 +881,7 @@ impl WorkflowRuntime {
 
         Ok(Self {
             inner: Arc::new(WorkflowRuntimeInner {
+                actions: action_client,
                 client,
                 slack_live_client,
                 etl_client,
@@ -892,6 +897,25 @@ impl WorkflowRuntime {
                 default_harness,
             }),
         })
+    }
+
+    pub async fn decide_admin_action(
+        &self,
+        id: &str,
+        decision: &Value,
+    ) -> Result<Value, WorkflowRuntimeError> {
+        self.inner
+            .actions
+            .decide_admin_action(id, decision)
+            .await
+            .map_err(|error| {
+                let detail = match &error {
+                    IronControlError::Status { body, .. } => serde_json::from_str::<Value>(body).ok()
+                        .and_then(|value| value["error"]["message"].as_str().map(str::to_owned)),
+                    _ => None,
+                };
+                WorkflowRuntimeError::BadRequest(detail.unwrap_or_else(|| "Access decision service is unavailable; no new action was authorized. Retry when it is reachable.".into()))
+            })
     }
 
     pub async fn create_run(
@@ -3683,18 +3707,28 @@ async fn handle_python_context_request(
                 args,
                 &request_id,
                 None,
+                &workflow_clients.actions,
             )
             .await
             {
                 Ok(value) => Ok(value),
+                Err(WorkflowRuntimeError::Suspend) => return Err(WorkflowRuntimeError::Suspend),
                 Err(error) => Err(error.to_string()),
             }
         }
         Some("ctx.run_agents") => {
-            match run_python_agent_batch(session_runtime.clone(), ctx, input, message, &request_id)
-                .await
+            match run_python_agent_batch(
+                session_runtime.clone(),
+                ctx,
+                input,
+                message,
+                &request_id,
+                &workflow_clients.actions,
+            )
+            .await
             {
                 Ok(value) => Ok(value),
+                Err(WorkflowRuntimeError::Suspend) => return Err(WorkflowRuntimeError::Suspend),
                 Err(error) => Err(error.to_string()),
             }
         }
@@ -3954,7 +3988,14 @@ async fn run_python_agent_turn(
     args: Value,
     request_id: &str,
     default_thread_key: Option<String>,
+    action_client: &IronControlClient,
 ) -> Result<Value, WorkflowRuntimeError> {
+    let agent_key = args
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or(request_id);
+    let access = wait_for_admin_actions(ctx, input, agent_key, action_client).await?;
+    let resume_thread_key = default_thread_key.clone();
     let text = args
         .get("text")
         .or_else(|| args.get("prompt"))
@@ -4021,6 +4062,11 @@ async fn run_python_agent_turn(
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| format!("absurd-workflow:{}:{request_id}:user", ctx.task_id()));
     let mut session_metadata = agent_metadata(&args, ctx, input, "session");
+    object_insert(
+        &mut session_metadata,
+        "workflow_agent_key",
+        json!(agent_key),
+    );
     if let Some(persona) = args.get("persona").and_then(Value::as_str) {
         object_insert(&mut session_metadata, "persona", json!(persona));
     }
@@ -4077,7 +4123,45 @@ async fn run_python_agent_turn(
     if let Some(model) = model.as_deref() {
         object_insert(&mut execution_metadata, "model", json!(model));
     }
+    let binding = ctx.step(&format!("access.binding:{agent_key}"), || async { Ok(json!({
+        "thread_key": thread_key, "message_id": client_message_id, "execution_key": execution_idempotency_key,
+    })) }).await.map_err(|error| WorkflowRuntimeError::BadRequest(error.to_string()))?;
+    let thread_key = binding["thread_key"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    let client_message_id = binding["message_id"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    let execution_idempotency_key = binding["execution_key"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
     let cleanup_thread_key = ThreadKey::parse(thread_key.clone())?;
+    let suffix = access
+        .iter()
+        .map(|action| action["id"].as_str().unwrap_or_default())
+        .collect::<Vec<_>>()
+        .join(":");
+    let client_message_id = if suffix.is_empty() {
+        client_message_id
+    } else {
+        format!("{client_message_id}:access:{suffix}")
+    };
+    let execution_idempotency_key = if suffix.is_empty() {
+        execution_idempotency_key
+    } else {
+        format!("{execution_idempotency_key}:access:{suffix}")
+    };
+    let parts = if access.is_empty() {
+        parts
+    } else {
+        vec![json!({"type": "text", "text": format!(
+            "Continue this same task from its saved work. The authorized administrative actions have completed with these readback receipts: {}. Retry the blocked operation through the supported tool; do not repeat completed work or open duplicate PRs. Original request: {}",
+            serde_json::to_string(&access)?, text
+        )})]
+    };
     let result = run_agent_session_turn(
         session_runtime.clone(),
         AgentTurnRequest {
@@ -4113,7 +4197,73 @@ async fn run_python_agent_turn(
             Ok(_) => {}
         }
     }
+    let resolved = wait_for_admin_actions(ctx, input, agent_key, action_client).await?;
+    if resolved.len() > access.len() {
+        return Box::pin(run_python_agent_turn(
+            session_runtime,
+            ctx,
+            input,
+            args,
+            request_id,
+            resume_thread_key,
+            action_client,
+        ))
+        .await;
+    }
     serde_json::to_value(result?).map_err(WorkflowRuntimeError::from)
+}
+
+async fn wait_for_admin_actions(
+    ctx: &TaskContext,
+    input: &WorkflowTaskInput,
+    agent_key: &str,
+    client: &IronControlClient,
+) -> Result<Vec<Value>, WorkflowRuntimeError> {
+    // No human origin means a schedule/webhook never borrows a Slack admin.
+    if input.diagnostic_owner.is_none() {
+        return Ok(Vec::new());
+    }
+    for poll in 0..=180 {
+        let actions = client
+            .admin_actions(ctx.task_id(), agent_key)
+            .await
+            .map_err(|error| {
+                WorkflowRuntimeError::BadRequest(format!(
+                    "Cannot inspect access approvals: {error}"
+                ))
+            })?;
+        if let Some(action) = actions.iter().find(|action| {
+            matches!(
+                action["status"].as_str(),
+                Some("denied" | "expired" | "failed")
+            )
+        }) {
+            return Err(WorkflowRuntimeError::BadRequest(format!(
+                "Access request {} {}: {}. Existing work is preserved; no replacement run was started.",
+                action["id"], action["status"], action["error"]
+            )));
+        }
+        if !actions
+            .iter()
+            .any(|action| action["status"] == "waiting_for_access")
+        {
+            return Ok(actions);
+        }
+        match ctx
+            .sleep_for(
+                &format!("access.wait:{agent_key}:{poll}"),
+                Duration::from_secs(10),
+            )
+            .await
+        {
+            Ok(()) => {}
+            Err(absurd::Error::Suspend) => return Err(WorkflowRuntimeError::Suspend),
+            Err(error) => return Err(WorkflowRuntimeError::BadRequest(error.to_string())),
+        }
+    }
+    Err(WorkflowRuntimeError::BadRequest(
+        "Access approval wait expired; no action was applied".into(),
+    ))
 }
 
 fn parse_release_sandbox_after_turn(args: &Value) -> Result<bool, WorkflowRuntimeError> {
@@ -4274,6 +4424,7 @@ async fn run_python_agent_batch(
     input: &WorkflowTaskInput,
     message: &Value,
     request_id: &str,
+    action_client: &IronControlClient,
 ) -> Result<Value, WorkflowRuntimeError> {
     let (agents, max_concurrency) = parse_python_agent_batch(message, request_id)?;
     let task_id = ctx.task_id().replace('-', "");
@@ -4294,6 +4445,7 @@ async fn run_python_agent_batch(
                 agent.args.clone(),
                 &agent_request_id,
                 Some(default_thread_key),
+                action_client,
             )
             .await;
             (agent, result)
@@ -4301,6 +4453,12 @@ async fn run_python_agent_batch(
     })
     .await;
 
+    if outcomes
+        .iter()
+        .any(|(_, result)| matches!(result, Err(WorkflowRuntimeError::Suspend)))
+    {
+        return Err(WorkflowRuntimeError::Suspend);
+    }
     let mut succeeded = 0;
     let mut failed = 0;
     let results = outcomes
@@ -4391,6 +4549,16 @@ fn agent_metadata(
     object_insert(&mut metadata, "workflow_task_id", json!(ctx.task_id()));
     object_insert(&mut metadata, "workflow_run_id", json!(ctx.run_id()));
     object_insert(&mut metadata, "workflow_context_phase", json!(phase));
+    object_insert(
+        &mut metadata,
+        "admin_origin_principal",
+        json!(input.diagnostic_owner),
+    );
+    object_insert(
+        &mut metadata,
+        "slack_thread_ts",
+        input.input.get("thread_ts").cloned().unwrap_or(Value::Null),
+    );
     metadata
 }
 
@@ -5837,6 +6005,108 @@ mod tests {
                 .expect("optional workflow should be allowed"),
             None
         );
+    }
+
+    #[tokio::test]
+    async fn approval_wait_replays_same_run_without_repeating_completed_steps() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        let Ok(url) = std::env::var("ABSURD_TEST_DATABASE_URL") else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.unwrap();
+        let queue = format!("access_{}", uuid::Uuid::new_v4().simple());
+        let client = Client::from_pool_with_options(
+            pool.clone(),
+            ClientOptions {
+                queue_name: queue,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        client.create_queue(None, Default::default()).await.unwrap();
+        let approved = Arc::new(AtomicBool::new(false));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn({
+            let approved = approved.clone();
+            async move {
+                loop {
+                    let (stream, _) = listener.accept().await.unwrap();
+                    let mut reader = BufReader::new(stream);
+                    loop {
+                        let mut line = String::new();
+                        reader.read_line(&mut line).await.unwrap();
+                        if line == "\r\n" {
+                            break;
+                        }
+                    }
+                    let status = if approved.load(Ordering::SeqCst) {
+                        "completed"
+                    } else {
+                        "waiting_for_access"
+                    };
+                    let body = json!({"data": [{"id": "aar_Test", "status": status, "receipt": {"applied": true}}]}).to_string();
+                    reader.get_mut().write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+                }
+            }
+        });
+        let control = IronControlClient::new(format!("http://{address}"), "test-key");
+        let side_effects = Arc::new(AtomicUsize::new(0));
+        client.register_task("approval-test", { let side_effects = side_effects.clone(); move |input: WorkflowTaskInput, ctx| {
+            let control = control.clone(); let side_effects = side_effects.clone(); async move {
+                let original_run = ctx.step("before_access", || async {
+                    side_effects.fetch_add(1, Ordering::SeqCst); Ok(ctx.run_id().to_owned())
+                }).await?;
+                match wait_for_admin_actions(&ctx, &input, "build", &control).await {
+                    Ok(actions) => Ok(json!({"original_run": original_run, "resumed_run": ctx.run_id(), "actions": actions})),
+                    Err(WorkflowRuntimeError::Suspend) => Err(absurd::Error::Suspend),
+                    Err(error) => Err(absurd::Error::InvalidOptions(error.to_string())),
+                }
+            }
+        }}).unwrap();
+        let spawned = client
+            .spawn(
+                "approval-test",
+                WorkflowTaskInput {
+                    workflow_name: "approval-test".into(),
+                    input: json!({}),
+                    harness_type: HarnessType::Codex,
+                    slack_button_feedback: None,
+                    diagnostic_owner: Some("prn_origin".into()),
+                    diagnostic_parent: None,
+                },
+                Default::default(),
+            )
+            .await
+            .unwrap();
+        client
+            .work_batch(absurd::WorkBatchOptions::default())
+            .await
+            .unwrap();
+        let status = client
+            .await_task_result(&spawned.task_id, None, Some(Duration::from_millis(50)))
+            .await;
+        assert!(
+            status.is_err(),
+            "pending approval must not finish the workflow"
+        );
+        assert_eq!(side_effects.load(Ordering::SeqCst), 1);
+        approved.store(true, Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_secs(11)).await;
+        client
+            .work_batch(absurd::WorkBatchOptions::default())
+            .await
+            .unwrap();
+        let snapshot = client
+            .await_task_result(&spawned.task_id, None, Some(Duration::from_secs(2)))
+            .await
+            .unwrap();
+        let result = snapshot.result::<Value>().unwrap().unwrap();
+        assert_eq!(result["original_run"], spawned.run_id);
+        assert_eq!(result["resumed_run"], spawned.run_id);
+        assert_eq!(side_effects.load(Ordering::SeqCst), 1);
+        assert_eq!(result["actions"][0]["status"], "completed");
+        server.abort();
     }
 
     #[tokio::test]

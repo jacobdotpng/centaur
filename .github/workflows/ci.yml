@@ -423,6 +423,7 @@ jobs:
       - name: Test
         env:
           SESSION_SQLX_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+          ABSURD_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/absurd_sdk
         run: |
           cargo test --locked --workspace \
             --exclude absurd-sdk \

@@ -23,10 +23,7 @@ module SandboxAdminAuthentication
     principal = current_proxy.principal
     user = principal.console_user
     unless admin_slack_scope?(principal) && user&.active? && user.admin?
-      return render_error(
-        status: :forbidden,
-        message: "admin changes require an active Console admin linked to a home-workspace Slack DM or an explicitly trusted channel"
-      )
+      return resolve_admin_access_blocker!
     end
 
     @sandbox_admin = user
@@ -34,6 +31,29 @@ module SandboxAdminAuthentication
       "sandbox_admin_request admin=#{user.oid} principal=#{principal.oid} " \
       "proxy=#{current_proxy.oid} method=#{request.method} path=#{request.path}"
     )
+  end
+
+
+  def resolve_admin_access_blocker!
+    if current_proxy.labels["centaur.admin_origin_principal"].present?
+      AdminActionBroker.origin_admin!(Principal.find_by_oid!(current_proxy.labels["centaur.admin_origin_principal"]))
+    end
+    operation = AdminActionOperations.from_http(request.method, request.path, params.to_unsafe_h)
+    if operation && current_proxy.labels["centaur.admin_origin_principal"].present?
+      action = AdminActionBroker.request!(proxy: current_proxy, operation: operation)
+      AdminActionSlack.post!(action)
+      return render status: :forbidden, json: { error: {
+        code: "admin_approval_required", message: "A scoped access request is available in the originating Slack thread. Stop this agent turn; the workflow will wait and continue after the decision.",
+        resolution: action.public_payload
+      } }
+    end
+    render status: :forbidden, json: { error: {
+      code: "admin_scope_required",
+      message: "This session cannot administer Console directly. Use centaur-console request-action with a registered typed operation from a workflow with a verified trusted Slack origin. For an unregistered operation, propose a reviewed broker handler; do not repeat the same HTTP request or assume broader worker authority.",
+      supported_operations: AdminActionOperations::KEYS.keys
+    } }
+  rescue AdminActionBroker::Denied, AdminActionOperations::Unsupported => e
+    render status: :forbidden, json: { error: { code: "admin_resolution_unavailable", message: e.message } }
   end
 
   def admin_slack_scope?(principal)

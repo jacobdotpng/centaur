@@ -547,6 +547,36 @@ describe('slackbotv2', () => {
     }
   })
 
+  it('verifies administrative button signatures and hands the actual actor to the broker', async () => {
+    const decisions: Record<string, unknown>[] = []
+    bot = createTestBot({ fetch: async (input, init) => {
+      if (String(input).endsWith('/api/admin-actions/aar_Test/decide')) {
+        decisions.push(JSON.parse(String(init?.body)))
+        return Response.json({ data: { status: 'completed', workflow_task_id: 'original-task' } })
+      }
+      return globalThis.fetch(input, init)
+    } })
+    const payload = { type: 'block_actions', team: { id: TEAM_ID },
+      user: { id: USER_ID, username: 'tester', team_id: TEAM_ID }, channel: { id: CHANNEL_ID },
+      message: { ts: '1700000003.000200', text: 'A scoped action needs access' },
+      actions: [{ action_id: 'centaur.admin-action:aar_Test:once', value: 'aar_Test',
+        action_ts: '1700000004.000200', type: 'button' }] }
+    const waits: Promise<unknown>[] = []
+    const signed = signedSlackInteraction(payload)
+    const badHeaders = new Headers(signed.headers)
+    badHeaders.set('x-slack-signature', 'v0=invalid')
+    const rejected = await bot.app.request('/api/slack/actions', { ...signed, headers: badHeaders }, {}, waitUntilContext(waits))
+    expect(rejected.status).toBe(401)
+    expect(decisions).toHaveLength(0)
+    const accepted = await bot.app.request('/api/slack/actions', signedSlackInteraction(payload), {}, waitUntilContext(waits))
+    expect(accepted.status).toBe(200)
+    await Promise.all(waits)
+    expect(decisions).toEqual([{ decision: 'once', user_id: USER_ID, team_id: TEAM_ID,
+      channel_id: CHANNEL_ID, message_ts: payload.message.ts }])
+    expect(codexApi.executes).toHaveLength(0)
+    expect(codexApi.workflowEvents).toHaveLength(0)
+  })
+
   it('durably hands off workflow buttons before acknowledging and retries failed acceptance', async () => {
     const requests: Record<string, unknown>[] = []
     const feedback: unknown[] = []

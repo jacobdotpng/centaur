@@ -4141,6 +4141,7 @@ async fn run_python_agent_turn(
     let cleanup_thread_key = ThreadKey::parse(thread_key.clone())?;
     let suffix = access
         .iter()
+        .filter(|action| admin_action_requires_agent_resume(action))
         .map(|action| action["id"].as_str().unwrap_or_default())
         .collect::<Vec<_>>()
         .join(":");
@@ -4154,7 +4155,7 @@ async fn run_python_agent_turn(
     } else {
         format!("{execution_idempotency_key}:access:{suffix}")
     };
-    let parts = if access.is_empty() {
+    let parts = if suffix.is_empty() {
         parts
     } else {
         vec![json!({"type": "text", "text": format!(
@@ -4198,7 +4199,10 @@ async fn run_python_agent_turn(
         }
     }
     let resolved = wait_for_admin_actions(ctx, input, agent_key, action_client).await?;
-    if resolved.len() > access.len() {
+    if resolved.iter().any(|action| {
+        admin_action_requires_agent_resume(action)
+            && !access.iter().any(|previous| previous["id"] == action["id"])
+    }) {
         return Box::pin(run_python_agent_turn(
             session_runtime,
             ctx,
@@ -4213,6 +4217,14 @@ async fn run_python_agent_turn(
     let mut output = serde_json::to_value(result?)?;
     output["admin_actions"] = json!(resolved);
     Ok(output)
+}
+
+fn admin_action_requires_agent_resume(action: &Value) -> bool {
+    action["status"] == "completed"
+        && matches!(action["approval_scope"].as_str(), Some("once" | "workflow"))
+        && action["approved_by"]
+            .as_str()
+            .is_some_and(|actor| actor.starts_with(['U', 'W']))
 }
 
 async fn wait_for_admin_actions(
@@ -6012,6 +6024,23 @@ mod tests {
                 .expect("optional workflow should be allowed"),
             None
         );
+    }
+
+    #[test]
+    fn automatic_reads_and_standing_rules_do_not_restart_completed_agent_work() {
+        for (scope, actor, expected) in [
+            ("origin_read", "verified-origin", false),
+            ("workflow", "standing-policy", false),
+            ("once", "UAPPROVER", true),
+            ("workflow", "WAPPROVER", true),
+        ] {
+            let action =
+                json!({"status": "completed", "approval_scope": scope, "approved_by": actor});
+            assert_eq!(admin_action_requires_agent_resume(&action), expected);
+        }
+        assert!(!admin_action_requires_agent_resume(
+            &json!({"status": "waiting_for_access"})
+        ));
     }
 
     #[tokio::test]

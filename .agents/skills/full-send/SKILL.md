@@ -32,10 +32,13 @@ Use `centaur-workflows start full_send --input '<JSON>'`, with these fields:
 
 Use a stable start idempotency key derived from the originating thread and
 confirmation timestamp (`centaur-workflows start --help` lists the flag).
-Inspect the run with `centaur-workflows run RUN_ID`; report the real run ID and
-PR, review, CI/CD and deployment evidence as they become available. The workflow
-posts progress and its final outcome in the original thread. Never call a queued
-run shipped. If absent, disabled, or missing grants, report that limitation and
+Inspect the run once with `centaur-workflows run RUN_ID` and acknowledge its real
+run ID briefly, then return. The workflow owns the updating Slack status and the
+final outcome notice in the original thread. Do not keep the conversational agent
+polling, narrate command counts, or duplicate the workflow's completion report.
+When explicitly asked for status, inspect the live run/progress and explain the
+current stage, relevant PR/check/deployment links, or concrete blocker concisely.
+Never call a queued or running run shipped. If absent, disabled, or missing grants, report that limitation and
 prepare the required configuration within the authorized scope. Do not silently
 replace either named workflow with ad-hoc agents.
 

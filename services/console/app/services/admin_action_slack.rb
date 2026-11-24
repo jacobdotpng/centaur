@@ -32,13 +32,23 @@ class AdminActionSlack
                      **(style ? { style: style } : {}),
                      **(decision == "workflow" ? { confirm: { title: { type: "plain_text", text: "Save an exact standing approval?" },
                        text: { type: "mrkdwn", text: "Allows only this operation, target and parameters for future runs of this workflow from this trusted channel. It does not grant general administration." },
-                       confirm: { type: "plain_text", text: "Allow matching action" }, cancel: { type: "plain_text", text: "Cancel" } } } : {}) }
+                       confirm: { type: "plain_text", text: "Allow matching action" }, deny: { type: "plain_text", text: "Cancel" } } } : {}) }
                  end },
                  { type: "context", elements: [ { type: "mrkdwn", text: "Or mention Centaur with `approve once #{request.oid}`, `details #{request.oid}` or `deny #{request.oid}` in this thread. Standing approvals require the explicit menu option." } ] } ]
       key = request.request_key[0, 32]
       client_id = [ key[0, 8], key[8, 4], key[12, 4], key[16, 4], key[20, 12] ].join("-")
-      posted = api("chat.postMessage", { channel: request.channel_id, text: text(request), blocks: blocks,
-                                        thread_ts: request.thread_ts.presence, client_msg_id: client_id }.compact)
+      payload = { channel: request.channel_id, text: text(request), blocks: blocks,
+                  thread_ts: request.thread_ts.presence, client_msg_id: client_id }.compact
+      begin
+        posted = api("chat.postMessage", payload)
+      rescue SlackApi::Error => e
+        raise unless %w[invalid_blocks invalid_blocks_format msg_blocks_too_long].include?(e.code)
+        Rails.logger.warn("admin_action_menu_fallback request=#{request.oid} slack_error=#{e.code}")
+        fallback = text(request) + "\nReply in this thread mentioning Centaur with one of:\n" \
+          "`approve once #{request.oid}` · `details #{request.oid}` · `deny #{request.oid}`\n" \
+          "Button delivery was rejected; standing approval is unavailable through text replies."
+        posted = api("chat.postMessage", payload.except(:blocks).merge(text: fallback))
+      end
       request.update!(message_ts: posted.fetch("ts"))
     end
   end

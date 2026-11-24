@@ -7671,6 +7671,7 @@ fn proxy_labels_from_session_metadata(
     let mut labels = BTreeMap::new();
     for key in [
         "admin_origin_principal",
+        "admin_delivery_channel",
         "workflow_task_id",
         "workflow_run_id",
         "workflow_agent_key",

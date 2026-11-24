@@ -7,6 +7,10 @@ This mechanism is shared by Python workflows, including child workflows, Full Se
 and agentic review. Name agent turns uniquely within a workflow so replay can restore
 the same agent/session identifiers.
 
+Permission metadata reads are allowed through a currently verified originating
+administrator, without granting the worker direct administration or exposing values.
+Setting changes require an exact approval or matching standing policy.
+
 When a supported admin endpoint refuses a worker, Console automatically records
 an access request and posts a menu in its originating trusted channel/thread.
 The worker ends its turn. The durable runner releases that agent's sandbox when
@@ -42,7 +46,9 @@ handler or provider authorization is needed; a generic 403 never broadens creden
 
 The `admin_action` workflow performs one typed operation with the same shared broker.
 It requires a managed workflow principal and model access in deployment configuration.
-It has no GitHub or production deployment grant by default.
+It has no GitHub or production deployment grant by default. It reports success only
+from api-rs-attached Console receipts, never from a model's claim that it completed.
+Resolve the target principal OID through authorized tools before starting it.
 
 ## Authorization and durability
 
@@ -51,7 +57,8 @@ propagates it to child workflows. The trusted session runtime writes that identi
 task, run and agent identifiers onto the assigned proxy. Sandbox input cannot choose
 its origin. Console rechecks the live linked administrator, trusted-channel/bot
 membership, the actual Slack actor's current membership, the exact card or thread,
-and that the originating task is still active. Scheduled and webhook jobs without
+and that the originating task is still active. For a linked administrator's DM,
+Console verifies the actual DM recipient with Slack and only that person may approve. Scheduled and webhook jobs without
 a verified Slack origin cannot borrow a human administrator.
 
 Slackbot verifies the raw Slack signature and workspace before forwarding decisions.

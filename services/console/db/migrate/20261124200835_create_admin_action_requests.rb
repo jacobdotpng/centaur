@@ -1,8 +1,10 @@
 class CreateAdminActionRequests < ActiveRecord::Migration[8.1]
   def change
     create_table :admin_action_requests do |t|
-      t.references :origin_principal, null: false, foreign_key: { to_table: :principals }
-      t.references :worker_principal, null: false, foreign_key: { to_table: :principals }
+      t.references :origin_principal, foreign_key: { to_table: :principals, on_delete: :nullify }
+      t.string :origin_principal_oid, null: false
+      t.references :worker_principal, foreign_key: { to_table: :principals, on_delete: :nullify }
+      t.string :worker_principal_oid, null: false
       t.string :request_key, null: false, index: { unique: true }
       t.string :policy_key, null: false
       t.string :workflow_task_id, null: false
@@ -26,7 +28,7 @@ class CreateAdminActionRequests < ActiveRecord::Migration[8.1]
     end
     add_index :admin_action_requests, [ :workflow_task_id, :workflow_agent_key ], name: :admin_actions_agent_index
     create_table :admin_action_policies do |t|
-      t.references :origin_principal, null: false, foreign_key: { to_table: :principals }
+      t.references :origin_principal, null: false, foreign_key: { to_table: :principals, on_delete: :cascade }
       t.string :policy_key, null: false, index: { unique: true }
       t.string :workflow_name, null: false
       t.jsonb :document, null: false

@@ -27,8 +27,10 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_24_200835) do
   end
 
   create_table "admin_action_requests", force: :cascade do |t|
-    t.bigint "origin_principal_id", null: false
-    t.bigint "worker_principal_id", null: false
+    t.bigint "origin_principal_id"
+    t.string "origin_principal_oid", null: false
+    t.bigint "worker_principal_id"
+    t.string "worker_principal_oid", null: false
     t.string "request_key", null: false
     t.string "policy_key", null: false
     t.string "workflow_task_id", null: false
@@ -641,9 +643,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_24_200835) do
     t.index ["email"], name: "index_users_on_email", unique: true
   end
 
-  add_foreign_key "admin_action_policies", "principals", column: "origin_principal_id"
-  add_foreign_key "admin_action_requests", "principals", column: "origin_principal_id"
-  add_foreign_key "admin_action_requests", "principals", column: "worker_principal_id"
+  add_foreign_key "admin_action_policies", "principals", column: "origin_principal_id", on_delete: :cascade
+  add_foreign_key "admin_action_requests", "principals", column: "origin_principal_id", on_delete: :nullify
+  add_foreign_key "admin_action_requests", "principals", column: "worker_principal_id", on_delete: :nullify
   add_foreign_key "api_client_principals", "api_clients", on_delete: :cascade
   add_foreign_key "api_client_principals", "principals", on_delete: :cascade
   add_foreign_key "api_clients", "users", column: "created_by_id"

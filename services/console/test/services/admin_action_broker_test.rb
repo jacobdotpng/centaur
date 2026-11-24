@@ -121,4 +121,31 @@ class AdminActionBrokerTest < ActiveSupport::TestCase
     end
     api.verify
   end
+  test "a linked admin DM validates its actual recipient and rejects a different DM" do
+    @origin.update!(kind: "slack_dm", slack_user_id: "UADMIN00001", slack_channel_id: nil)
+    @proxy.update!(labels: @proxy.labels.merge("centaur.admin_delivery_channel" => "DDIRECT00001"))
+    AdminActionSlack.stub(:api, ->(*) { { "channel" => { "is_im" => true, "user" => "UADMIN00001" } } }) do
+      assert_equal "DDIRECT00001", create_request.channel_id
+    end
+    AdminActionSlack.stub(:api, ->(*) { { "channel" => { "is_im" => true, "user" => "UOTHER00001" } } }) do
+      assert_raises(AdminActionBroker::Denied) { create_request }
+    end
+  end
+
+  test "removing a principal preserves action audit and invalidates future approval" do
+    request = create_request
+    original_oid = @origin.oid
+    @origin.destroy!
+    assert_nil request.reload.origin_principal
+    assert_equal original_oid, request.origin_principal_oid
+    assert_raises(AdminActionBroker::Denied) { AdminActionBroker.origin_admin!(request.origin_principal) }
+  end
+  test "permission catalogs are explicit metadata-only approved operations" do
+    request = create_request({ "operation" => "catalog.credentials", "target" => "credentials", "arguments" => {} })
+    assert_equal "completed", request.status
+    assert_equal "origin_read", request.approval_scope
+    assert request.reload.receipt.is_a?(Array)
+    assert request.receipt.any?
+    assert request.receipt.all? { |record| (record.keys - %w[id foreign_id name grant_key]).empty? }
+  end
 end

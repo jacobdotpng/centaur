@@ -4210,7 +4210,9 @@ async fn run_python_agent_turn(
         ))
         .await;
     }
-    serde_json::to_value(result?).map_err(WorkflowRuntimeError::from)
+    let mut output = serde_json::to_value(result?)?;
+    output["admin_actions"] = json!(resolved);
+    Ok(output)
 }
 
 async fn wait_for_admin_actions(
@@ -4553,6 +4555,11 @@ fn agent_metadata(
         &mut metadata,
         "admin_origin_principal",
         json!(input.diagnostic_owner),
+    );
+    object_insert(
+        &mut metadata,
+        "admin_delivery_channel",
+        input.input.get("channel").cloned().unwrap_or(Value::Null),
     );
     object_insert(
         &mut metadata,
@@ -6054,6 +6061,11 @@ mod tests {
         let side_effects = Arc::new(AtomicUsize::new(0));
         client.register_task("approval-test", { let side_effects = side_effects.clone(); move |input: WorkflowTaskInput, ctx| {
             let control = control.clone(); let side_effects = side_effects.clone(); async move {
+                let forged = json!({"metadata": {"admin_origin_principal": "prn_forged", "admin_delivery_channel": "DFORGED0001", "workflow_run_id": "forged"}});
+                let metadata = agent_metadata(&forged, &ctx, &input, "session");
+                assert_eq!(metadata["admin_origin_principal"], "prn_origin");
+                assert!(metadata["admin_delivery_channel"].is_null());
+                assert_eq!(metadata["workflow_run_id"], ctx.run_id());
                 let original_run = ctx.step("before_access", || async {
                     side_effects.fetch_add(1, Ordering::SeqCst); Ok(ctx.run_id().to_owned())
                 }).await?;

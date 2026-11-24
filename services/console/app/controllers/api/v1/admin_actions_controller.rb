@@ -12,6 +12,7 @@ module Api
               action.update!(status: "expired", error_message: "Approval expired; no action was applied.")
             end
           end
+          AdminActionSlack.post!(action) if action.status == "waiting_for_access" && action.message_ts.blank?
         end
         render json: { data: actions.map(&:public_payload) }
       end

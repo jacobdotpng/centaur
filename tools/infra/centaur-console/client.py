@@ -229,6 +229,8 @@ class ConsoleClient:
         result = response.json()["data"]
         if result["status"] == "waiting_for_access":
             raise RuntimeError(f"ADMIN_APPROVAL_REQUIRED {result['id']}: Approval menu posted. End this turn; the same workflow will resume after the decision.")
+        if result["status"] != "completed":
+            raise RuntimeError(f"Access request {result['id']} {result['status']}: {result.get('error')}")
         return result
 
     def action_status(self, request_id: str) -> dict[str, Any]:
@@ -431,7 +433,7 @@ class ConsoleClient:
     def _admin_secret(self, secret: str) -> dict[str, Any]:
         matches = [
             row
-            for row in self.admin_secrets()
+            for row in self.admin_secrets(query=secret)
             if secret in (row.get("id"), row.get("foreign_id"), row.get("name"))
         ]
         if len(matches) != 1:
@@ -514,6 +516,8 @@ class ConsoleClient:
                     resolution = envelope.get("resolution", {})
                     if resolution.get("status") == "completed":
                         return {"data": resolution["receipt"] if resolution.get("receipt") is not None else {}}
+                    if resolution.get("status") in {"denied", "expired", "failed"}:
+                        raise RuntimeError(f"Access request {resolution.get('id')} {resolution.get('status')}: {resolution.get('error')}")
                     raise RuntimeError(
                         f"ADMIN_APPROVAL_REQUIRED {resolution.get('id')}: "
                         "The approval menu is already in the originating Slack thread. "

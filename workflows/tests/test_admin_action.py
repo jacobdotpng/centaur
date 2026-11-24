@@ -13,7 +13,8 @@ class AdminActionWorkflowTest(unittest.TestCase):
     def test_delivers_receipt_with_same_run_and_stable_named_agent(self):
         ctx = AsyncMock()
         ctx.run_id, ctx.task_id = 'run-original', 'task-original'
-        ctx.agent_turn.return_value = {'status': 'completed', 'result_text': '{"applied":true}'}
+        ctx.agent_turn.return_value = {'status': 'completed', 'result_text': '{"applied":true}', 'admin_actions': [{
+            'id': 'aar_Request', 'status': 'completed', 'operation': 'principal.read', 'target': 'prn_Target', 'arguments': {}, 'receipt': {'applied': True}}]}
         async def step(name, fn):
             return await fn()
         ctx.step.side_effect = step
@@ -29,6 +30,6 @@ class AdminActionWorkflowTest(unittest.TestCase):
         async def step(name, fn):
             return await fn()
         ctx.step.side_effect = step
-        with self.assertRaisesRegex(RuntimeError, 'did not complete'):
+        with self.assertRaisesRegex(RuntimeError, 'No matching'):
             asyncio.run(handler(Input('principal.read', 'prn_Target', channel='C12345678'), ctx))
-        ctx.post_to_slack.assert_not_called()
+        self.assertIn('stopped', ctx.post_to_slack.call_args.args[1])

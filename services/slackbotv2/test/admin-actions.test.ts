@@ -46,6 +46,17 @@ describe('administrative approval ingress', () => {
     expect(calls).toHaveLength(1)
   })
 
+  test('accepts the actual Slack MCP mention and attribution format without borrowing its actor', async () => {
+    const calls: Array<{url: string, body: any}> = []
+    expect(await dispatchAdminActionReply(options(calls), { type: 'event_callback', team_id: click.team_id, event: {
+      type: 'app_mention', user: click.user_id, channel: click.channel_id, thread_ts: '1111111111.111111',
+      text: '<@UBOT000001|Centaur> approve once aar_Example\n\n*Sent using* <@UATTRIBUTION|ChatGPT>'
+    } })).toBe(true)
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.body.user_id).toBe(click.user_id)
+    expect(calls[0]!.body.decision).toBe('once')
+  })
+
   test('a refused decision produces actionable feedback instead of claiming success', async () => {
     const result = await dispatchSlackBlockAction(options([], 403), click)
     expect(result?.outcome).toBe('denied')

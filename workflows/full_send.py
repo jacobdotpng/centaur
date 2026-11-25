@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from api.workflow_engine import WorkflowContext
-from workflows.slack_messages import error_summary, slack_text
+from workflows.slack_messages import error_summary, next_action, slack_text
 
 WORKFLOW_NAME = "full_send"
 WORKFLOW_PRINCIPAL = True
@@ -364,16 +364,15 @@ If you cannot verify deployment, return blocked, even if already merged.
         reason = error_summary(exc)
         outcome = ("The change is verified. I couldn't deliver its confirmation."
                    if stage == "Completion notice" else "Deployment is not verified yet.")
-        next_step = getattr(exc, "next_step", None)
-        if not isinstance(next_step, str) or not next_step.strip():
-            next_step = {
+        default_next_step = {
                 "Build": "Ask me to inspect the coding step before retrying.",
                 "Review": "Ask me to check the review findings and help repair the PR.",
                 "CI": "Ask me to check the failed or missing tests.",
                 "Deploy & verify": "Ask me to check the deployment before retrying; the PR may already be merged.",
                 "Completion notice": "Ask me to resend the confirmation; another deployment is unnecessary.",
-            }[stage]
-        detail = f"{reason}\n{confirmed}\n{outcome}\nNext: {slack_text(next_step, 180)}"
+        }[stage]
+        next_step = next_action(getattr(exc, "next_step", None), default_next_step)
+        detail = f"{reason}\n{confirmed}\n{outcome}\nNext: {next_step}"
         try:
             await progress("blocked", f"Blocked at {stage}", detail)
         except Exception:

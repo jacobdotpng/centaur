@@ -88,3 +88,13 @@ class FullSendProgressTests(unittest.TestCase):
             asyncio.run(handler(inputs(), ctx))
         self.assertEqual(ctx.post_to_slack.await_count, 2)
         self.assertIn('CI cannot read', ctx.post_to_slack.await_args_list[-1].args[1])
+
+    def test_technical_next_steps_are_kept_out_of_the_primary_card(self):
+        ctx = context([{'status': 'blocked', 'reason': 'A service denied access.',
+                       'next_step': 'Give role_Internal to prn_Internal for run 00000000-0000-0000-0000-000000000001.'}])
+        with self.assertRaises(RuntimeError):
+            asyncio.run(handler(inputs(), ctx))
+        text = ctx.update_slack.await_args_list[-1].args[2]
+        self.assertNotIn('prn_Internal', text)
+        self.assertNotIn('00000000-', text)
+        self.assertIn('Ask me', text)

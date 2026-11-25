@@ -33,6 +33,15 @@ def error_summary(error: object) -> str:
         return "A required step returned an error."
     if re.search(r"session\.execution_failed|agent turn exe_|Traceback|\b[A-Za-z]+::[A-Za-z]+", value):
         return "The agent stopped before this step finished."
-    if re.search(r"\b(?:aar|prn|exe|prx|grant|aap)_[A-Za-z0-9]+\b|\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b", value):
+    if re.search(r"\b(?:aar|prn|exe|prx|grant|aap|role|ssr|gas|gid|aas|ots|pgs|hms)_[A-Za-z0-9]+\b|\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b", value):
         return "I couldn't finish this step."
     return slack_text(value.strip().splitlines()[0] if value.strip() else "I couldn't finish this step.", 180)
+
+
+def next_action(value: object, fallback: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        return slack_text(fallback, 180)
+    text = slack_text(value.strip().splitlines()[0], 180)
+    # A repair instruction containing IDs, service bodies or traces belongs in
+    # diagnostics. Keep the visible next step understandable without a terminal.
+    return text if error_summary(value) == text else slack_text(fallback, 180)

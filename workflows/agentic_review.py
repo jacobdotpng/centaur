@@ -82,11 +82,11 @@ async def handler(inp: Input, ctx: WorkflowContext) -> dict[str, Any]:
         report = await review_pr(inp, ctx, repository)
     except Exception:
         # Keep exception details in the run, rather than exposing tool output to Slack.
-        await notify("failure", f"Agentic Review attempt failed for {inp.pr_url}. Run `{ctx.run_id}`; inspect the run for details or retries.")
+        await notify("failure", f"I couldn't finish reviewing {inp.pr_url}. Ask me to check the review before retrying.")
         raise
     await notify(
         "completion", f"Agentic Review finished for {inp.pr_url}: {report['status']} "
-        f"after {report['repairs']} repair round(s).\n{report['comment_url']}\nRun `{ctx.run_id}`."
+        f"after {report['repairs']} repair round(s).\n{report['comment_url']}"
     )
     return report
 

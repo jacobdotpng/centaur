@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from api.workflow_engine import WorkflowContext
+from workflows.slack_messages import error_summary, slack_text
 
 WORKFLOW_NAME = "full_send"
 WORKFLOW_PRINCIPAL = True
@@ -43,19 +44,6 @@ def object_result(result: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise RuntimeError("Full send agent must return an object")
     return value
-
-
-def slack_text(value: str, limit: int = 240) -> str:
-    """Bound untrusted text, redact common credentials, and neutralize mentions."""
-    value = re.sub(r"\b(?:github_pat_|gh[pousr]_|xox[baprs]-|sk-)[A-Za-z0-9_-]{12,}", "[redacted]", value)
-    value = re.sub(r"(?i)(authorization\s*[:=]\s*)(?:bearer\s+|basic\s+)?[^\s,;]+", r"\1[redacted]", value)
-    value = re.sub(r"(?i)((?:[\w-]*(?:token|password|secret|api[_-]?key)[\w-]*)\s*[=:]\s*)[\"']?[^\s,;\"']+[\"']?", r"\1[redacted]", value)
-    value = re.sub(r"([a-z][a-z0-9+.-]*://)[^\s/@]+:[^\s/@]+@", r"\1[redacted]@", value, flags=re.I)
-    value = re.sub(r"(?i)([?&][^=&\s]*(?:signature|credential|token|secret)[^=&\s]*=)[^&\s]+", r"\1[redacted]", value)
-    value = " ".join(value.split())
-    if len(value) > limit:
-        value = value[:limit-1] + "…"
-    return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def deployment_watch(result: dict[str, Any], repository: str) -> str:
@@ -107,7 +95,7 @@ async def handler(inp: Input, ctx: WorkflowContext) -> dict[str, Any]:
             links.append(f"<{review_url}|Review>")
         links.append(f"<https://github.com/{inp.repository}/actions|Pipelines>")
         return (f"*Full Send · {label}*\n{slack_text(inp.scope)}\n{detail}\n"
-                + " · ".join(links) + f"\n_Run `{ctx.run_id}`_")
+                + " · ".join(links))
 
     async def progress(name: str, label: str, detail: str):
         if not isinstance(status_message, dict) or not re.fullmatch(r"\d+\.\d+", status_message.get("ts", "")):
@@ -272,7 +260,7 @@ deployed yet: open it now and hold enablement until implementation deployment.
             comment = report.get("comment_url")
             if isinstance(comment, str) and re.fullmatch(re.escape(pr) + r"#issuecomment-[1-9]\d*", comment):
                 review_url = comment
-            confirmed = f"Review passed at `{sha[:12]}`."
+            confirmed = "Review passed."
             stage = "CI"
             await progress(f"ci_started_{attempt}", stage, confirmed + " Waiting for required checks; any code repair gets another review.")
 
@@ -294,7 +282,7 @@ cancelled or failed checks are not green. If no checks exist, report blocked.
             if ready.get("checks_green") is not True:
                 raise RuntimeError("Required CI is not green")
 
-            confirmed = f"Review passed · CI passed at `{sha[:12]}`."
+            confirmed = "Review passed · CI passed."
             stage = "Deploy & verify"
             await progress(f"ship_started_{attempt}", stage, confirmed + " Following the release pipeline, then checking the live behavior.")
 
@@ -368,29 +356,27 @@ If you cannot verify deployment, return blocked, even if already merged.
             watch = deployment_watch(shipped, inp.repository)
             confirmed = "Deployment and live verification passed."
             stage = "Completion notice"
-            await progress("shipped", "Shipped", f"{summary}\n<{watch}|Deployment evidence> · Revision `{slack_text(shipped['deployment_revision'], 12)}`")
+            await progress("shipped", "Shipped", f"{summary}\n<{watch}|Deployment evidence>")
             await post("shipped", f":white_check_mark: *Shipped* — <{pr}|PR #{pr.rsplit('/', 1)[1]}>\n{summary}\n<{watch}|Deployment evidence>")
             return result
         raise RuntimeError("Head changed after review three times; stopping before another merge attempt")
     except Exception as exc:
-        reason = slack_text(str(exc), 400)
-        outcome = ("The change is verified; the completion notice could not be delivered."
-                   if stage == "Completion notice" else "Merge/deployment outcome is not verified by this notice.")
-        detail = f"{reason}\nLast confirmed: {confirmed}\n{outcome}"
-        try:
-            await progress("blocked", f"Blocked at {stage}", detail)
-        except Exception:
-            # Still attempt the terminal notice when editing the status failed.
-            pass
-        link = f" · <{pr}|PR #{pr.rsplit('/', 1)[1]}>" if pr else ""
+        reason = error_summary(exc)
+        outcome = ("The change is verified. I couldn't deliver its confirmation."
+                   if stage == "Completion notice" else "Deployment is not verified yet.")
         next_step = getattr(exc, "next_step", None)
         if not isinstance(next_step, str) or not next_step.strip():
             next_step = {
-                "Build": "Inspect the coding agent failure and recover any pushed PR before retrying.",
-                "Review": "Open the review findings, repair the PR, and rerun review before merging.",
-                "CI": "Open Checks, fix the failed or missing job, and rerun review if the code changes.",
-                "Deploy & verify": "Open Pipelines and the live deployment report; confirm the merge and rollout state before resuming.",
-                "Completion notice": "Resend the completion notice from this verified result; do not redeploy.",
+                "Build": "Ask me to inspect the coding step before retrying.",
+                "Review": "Ask me to check the review findings and help repair the PR.",
+                "CI": "Ask me to check the failed or missing tests.",
+                "Deploy & verify": "Ask me to check the deployment before retrying; the PR may already be merged.",
+                "Completion notice": "Ask me to resend the confirmation; another deployment is unnecessary.",
             }[stage]
-        await post("blocked", f":warning: *Blocked at {stage}*{link}\n{detail}\nNext: {slack_text(next_step)}\nRun `{ctx.run_id}`")
+        detail = f"{reason}\n{confirmed}\n{outcome}\nNext: {slack_text(next_step, 180)}"
+        try:
+            await progress("blocked", f"Blocked at {stage}", detail)
+        except Exception:
+            # One fallback only when the existing status card cannot be edited.
+            await post("blocked", card(f"Blocked at {stage}", detail))
         raise

@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from api.workflow_engine import WorkflowContext
+from workflows.slack_messages import error_summary
 
 WORKFLOW_NAME = "admin_action"
 WORKFLOW_PRINCIPAL = True
@@ -55,18 +56,28 @@ async def handler(inp: Input, ctx: WorkflowContext) -> dict[str, Any]:
     except Exception as exc:
         if inp.channel:
             await ctx.step("deliver_blocked", lambda: ctx.post_to_slack(
-                inp.channel, f"Administrative action stopped in run `{ctx.run_id}`: {str(exc)[:1500]}\n"
-                "Inspect this same run and its access request; no replacement workflow was started.",
+                inp.channel, f"{error_summary(exc)}\nAsk me to check this request before retrying.",
                 thread_ts=inp.thread_ts or None,
             ))
         raise
     if inp.channel:
-        await ctx.step("deliver_receipt", lambda: ctx.post_to_slack(
-            inp.channel, f"Administrative action completed in the same run `{ctx.run_id}`.\n"
-            f"Operation: `{inp.operation}` · Target: `{inp.target}`\n"
-            f"Request: `{receipt['id']}` · approved by `{receipt.get('approved_by')}`\n"
-            + json.dumps(receipt.get("receipt"), sort_keys=True)[:1800]
-            + "\nUse centaur-console action-status with the request ID for the complete recorded result.",
-            thread_ts=inp.thread_ts or None,
-        ))
+        message = receipt.get("slack_message") or {}
+        completion = receipt.get("presentation", {}).get("completion")
+        if not isinstance(completion, str) or not completion or len(completion) > 1000:
+            completion = "The requested action is complete."
+        text = f"*Done*\n{completion}"
+        if message.get("ts"):
+            if message.get("channel") != inp.channel or not isinstance(message["ts"], str) or not re.fullmatch(r"\d+\.\d+", message["ts"]):
+                raise RuntimeError("The approval card does not belong to this request's channel")
+            blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": text}},
+                      {"type": "actions", "elements": [{"type": "button", "text": {"type": "plain_text", "text": "Details"},
+                        "action_id": f"centaur.admin-action:{receipt['id']}:details", "value": receipt["id"]}]}]
+            await ctx.step("deliver_receipt", lambda: ctx.update_slack(
+                inp.channel, message["ts"], text, blocks=blocks,
+            ))
+        else:
+            # Metadata reads and records from older releases may have no card.
+            await ctx.step("deliver_receipt", lambda: ctx.post_to_slack(
+                inp.channel, text, thread_ts=inp.thread_ts or None,
+            ))
     return {"run_id": ctx.run_id, "task_id": ctx.task_id, "receipt": receipt}

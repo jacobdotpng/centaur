@@ -38,6 +38,10 @@ class AdminActionBrokerTest < ActiveSupport::TestCase
     assert_equal @proxy.labels["centaur.workflow_task_id"], request.workflow_task_id
   end
 
+  test "presentation preserves normal Ruby class introspection" do
+    assert_equal "AdminActionPresentation", AdminActionPresentation.name
+  end
+
   test "approval card explains the change without dumping internal identifiers" do
     @origin.update!(name: "Engineering")
     request = create_request

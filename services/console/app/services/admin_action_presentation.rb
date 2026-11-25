@@ -12,7 +12,7 @@ class AdminActionPresentation
     value.to_s.first(160).gsub("&", "&amp;").gsub("<", "&lt;").gsub(">", "&gt;")
   end
 
-  def self.name(record, fallback)
+  def self.display_name(record, fallback)
     return fallback unless record
     value = record.try(:name).presence || record.try(:foreign_id).presence
     if record.is_a?(Principal) && record.kind == "slack_channel" && record.name.blank?
@@ -32,7 +32,7 @@ class AdminActionPresentation
     else
       Principal.find_by(foreign_id: request.target)
     end
-    name(principal, "the selected agent")
+    display_name(principal, "the selected agent")
   end
 
   def self.summary(request)
@@ -52,23 +52,23 @@ class AdminActionPresentation
       end
       "Update #{target}: #{settings.to_sentence}."
     when "principal.role.assign", "principal.role.remove"
-      role = name(Role.find_by_oid(args["role_id"]), "the selected role")
+      role = display_name(Role.find_by_oid(args["role_id"]), "the selected role")
       request.operation.end_with?("assign") ? "Give #{target} the #{role} role." : "Remove the #{role} role from #{target}."
     when "principal.credential.grant"
       key, id = args.first
-      credential = name(AdminActionOperations::GRANT_TYPES.fetch(key).find_by_oid(id), "the selected credential")
+      credential = display_name(AdminActionOperations::GRANT_TYPES.fetch(key).find_by_oid(id), "the selected credential")
       "Give #{target} access to #{credential}."
     when "principal.credential.revoke"
-      credential = name(Grant.find_by_oid(args["grant_id"])&.grantable, "the selected credential")
+      credential = display_name(Grant.find_by_oid(args["grant_id"])&.grantable, "the selected credential")
       "Remove #{target}'s access to #{credential}."
     when "principal.slack_permission"
       channel = SlackBotChannel.find_by(team_id: request.team_id, channel_id: args["channel_id"])
       labels = { "upload_enabled" => "upload files", "download_enabled" => "download files", "history_enabled" => "read channel history" }
       settings = args.except("channel_id").map { |key, value| "#{labels.fetch(key)} #{value ? 'on' : 'off'}" }.to_sentence
-      "Update #{target}'s access in #{name(channel, 'the selected channel')}: #{settings}."
+      "Update #{target}'s access in #{display_name(channel, 'the selected channel')}: #{settings}."
     when "principal.slack_permission.remove"
       channel = SlackBotChannel.find_by(team_id: request.team_id, channel_id: args["channel_id"])
-      "Remove #{target}'s access to #{name(channel, 'the selected channel')}."
+      "Remove #{target}'s access to #{display_name(channel, 'the selected channel')}."
     when "principal.read", "principal.roles.read", "principal.grants.read"
       "Check access for #{target}."
     else

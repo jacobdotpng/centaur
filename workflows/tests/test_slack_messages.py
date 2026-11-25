@@ -22,6 +22,7 @@ class SlackMessageTests(unittest.TestCase):
 
     def test_json_and_stack_details_remain_private(self):
         for value in ['{"token":"sensitive-test-value","error":"failed"}',
+                      'Tool response: {"token":"sensitive-test-value","error":"failed"}',
                       'Traceback (most recent call last):\nFile "private.py", line 1',
                       'Request aar_Internal failed in run 00000000-0000-0000-0000-000000000001']:
             text = error_summary(value)

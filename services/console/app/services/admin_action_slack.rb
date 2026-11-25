@@ -19,6 +19,7 @@ class AdminActionSlack
     "#{AdminActionPresentation.summary(request)}\n\n" \
       "Operation: `#{request.operation}` on `#{request.target}`.\n" \
       "Workflow: `#{request.workflow_name}` · task `#{request.workflow_task_id}`\n" \
+      "Run: `#{request.workflow_run_id}`\n" \
       "Exact parameters: `#{JSON.generate(request.arguments)}`\n" \
       "Status: #{request.status.tr('_', ' ')}. Decision: #{request.approval_scope || 'not approved'}.\n" \
       "Expires #{request.expires_at.utc.iso8601}. Request `#{request.oid}`. " \

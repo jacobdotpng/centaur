@@ -29,7 +29,7 @@ def error_summary(error: object) -> str:
         return "I couldn't reach a required service."
     if re.search(r"<!doctype|<html|<svg|HTTP\s*5\d\d", value, re.I):
         return "A required service returned an error."
-    if value.lstrip().startswith(("{", "[")):
+    if value.lstrip().startswith(("{", "[")) or re.search(r"\{\s*[\"']", value):
         return "A required step returned an error."
     if re.search(r"session\.execution_failed|agent turn exe_|Traceback|\b[A-Za-z]+::[A-Za-z]+", value):
         return "The agent stopped before this step finished."

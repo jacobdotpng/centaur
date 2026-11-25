@@ -66,6 +66,7 @@ class AdminActionBrokerTest < ActiveSupport::TestCase
     assert_includes payload[:text], request.oid
     assert_includes payload[:text], request.operation
     assert_includes payload[:text], request.target
+    assert_includes payload[:text], request.workflow_run_id
     assert_includes payload[:text], JSON.generate(request.arguments)
     assert_equal "UADMIN00001", payload[:user]
   end

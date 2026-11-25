@@ -87,6 +87,7 @@ class AgenticReviewTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "private tool details"):
             asyncio.run(handler(inp, ctx))
         self.assertNotIn("private tool details", ctx.post_to_slack.call_args.args[1])
+        self.assertNotIn(ctx.run_id, ctx.post_to_slack.call_args.args[1])
         asyncio.run(handler(inp, ctx))
         self.assertEqual(ctx.post_to_slack.await_count, 2)
         self.assertIn("finished", ctx.post_to_slack.call_args.args[1])

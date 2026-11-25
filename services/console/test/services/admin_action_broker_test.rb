@@ -38,6 +38,79 @@ class AdminActionBrokerTest < ActiveSupport::TestCase
     assert_equal @proxy.labels["centaur.workflow_task_id"], request.workflow_task_id
   end
 
+  test "approval card explains the change without dumping internal identifiers" do
+    @origin.update!(name: "Engineering")
+    request = create_request
+    payloads = []
+    AdminActionSlack.stub(:api, ->(_method, payload) { payloads << payload; { "ts" => "1234567891.123456" } }) do
+      AdminActionSlack.post!(request)
+    end
+    text = payloads.first[:text]
+    assert_includes text, "Approval needed"
+    assert_includes text, "Engineering"
+    assert_includes text, "Full send"
+    [ request.oid, request.target, request.workflow_task_id, "principal.default_skill", "Exact parameters", "centaur-console" ].each do |internal|
+      assert_not_includes text, internal
+    end
+    assert_operator text.length, :<, 300
+    assert_equal "1234567891.123456", request.public_payload.dig(:slack_message, :ts)
+    assert_equal request.channel_id, request.public_payload.dig(:slack_message, :channel)
+  end
+
+  test "details retain exact scope and audit data outside the primary card" do
+    request = create_request
+    payload = nil
+    AdminActionSlack.stub(:api, ->(_method, body) { payload = body; {} }) do
+      AdminActionSlack.feedback!(request, user_id: "UADMIN00001", details: true)
+    end
+    assert_includes payload[:text], request.oid
+    assert_includes payload[:text], request.operation
+    assert_includes payload[:text], request.target
+    assert_includes payload[:text], request.workflow_run_id
+    assert_includes payload[:text], JSON.generate(request.arguments)
+    assert_equal "UADMIN00001", payload[:user]
+  end
+
+  test "terminal feedback is concise and keeps Details available" do
+    request = create_request
+    request.update!(message_ts: "1234567891.123456", status: "failed", error_message: "HTTP 500 <!doctype html><svg>private diagnostic output</svg>")
+    payload = nil
+    AdminActionSlack.stub(:api, ->(_method, body) { payload = body; {} }) do
+      AdminActionSlack.feedback!(request, user_id: "UADMIN00001")
+    end
+    assert_operator payload[:text].length, :<, 200
+    assert_not_includes payload[:text], "private diagnostic"
+    assert_not_includes payload[:text], request.workflow_task_id
+    assert_equal "Details", payload[:blocks].last[:elements].first[:text][:text]
+  end
+
+  test "duplicate approval feedback preserves the same final card content" do
+    request = create_request
+    request.update!(message_ts: "1234567891.123456")
+    decide(request)
+    payloads = []
+    AdminActionSlack.stub(:api, ->(_method, body) { payloads << body; {} }) do
+      2.times { AdminActionSlack.feedback!(request, user_id: "UADMIN00001") }
+    end
+    assert_equal payloads.first, payloads.last
+    assert_equal "*Done*\n#{request.public_payload.dig(:presentation, :completion)}", payloads.first[:text]
+    assert_not_includes payloads.first[:text], "continuing"
+  end
+
+  test "capability changes retain every requested permission in human language" do
+    @worker.update!(name: "Workflow test_access")
+    operation = { "operation" => "principal.sandbox_access", "target" => @worker.oid,
+      "arguments" => { "sandbox_observability_enabled" => false, "sandbox_workflows_write_enabled" => true, "sandbox_repo_cache" => "all" } }
+    request = create_request(operation)
+    text = AdminActionSlack.text(request)
+    assert_includes text, "diagnostics"
+    assert_includes text, "off"
+    assert_includes text, "manage workflows"
+    assert_includes text, "on"
+    assert_includes text, "private"
+    assert_not_includes text, "sandbox_"
+  end
+
   test "approval menu uses the Slack confirmation schema and persists delivery" do
     request = create_request
     payloads = []

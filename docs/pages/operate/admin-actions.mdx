@@ -18,10 +18,22 @@ The worker ends its turn. The durable runner releases that agent's sandbox when
 Previously checkpointed work and the agent session are preserved.
 
 - **Approve once:** apply only the exact operation, target and parameters in this request.
-- **Allow matching workflow action:** save an exact rule for this workflow and originating
+- **Always allow this change:** save an exact rule for this workflow and originating
   principal. It does not authorize another target, parameter set or workflow.
 - **Details:** show the scope without approving it.
 - **Deny:** leave settings unchanged and stop the blocked step with an explanation.
+
+The card names the requested change in plain language. **Details** opens the exact
+operation, parameters and diagnostic references privately for the person clicking;
+these are retained in the API/audit record rather than printed into the channel.
+The managed `admin_action` workflow edits that same card when complete instead of
+posting a second JSON receipt. Duplicate approval feedback uses the same final
+wording, so redelivery cannot return a completed card to a misleading waiting state.
+
+Full Send similarly updates its existing status card on failure, with the failed
+stage, last verified progress and next action. It posts a fallback only if that edit
+fails. Raw exceptions remain in durable workflow state; they are not copied into
+the Slack message.
 
 Mentioned replies `approve once aar_ID`, `details aar_ID` and `deny aar_ID` in the
 original thread provide a deterministic alternative to buttons. They bypass model

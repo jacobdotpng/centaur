@@ -37,13 +37,14 @@ class FullSendProgressTests(unittest.TestCase):
                                       'next_step': 'Restore Actions read permission for this repository, then recheck the same head.'}])
         with self.assertRaisesRegex(RuntimeError, 'cannot read'):
             asyncio.run(handler(inputs(), ctx))
-        text = ctx.post_to_slack.await_args_list[-1].args[1]
+        text = ctx.update_slack.await_args_list[-1].args[2]
         self.assertIn('CI', text)
         self.assertIn(PR, text)
         self.assertIn('Review passed', text)
         self.assertIn('CI cannot read required jobs', text)
         self.assertIn('Restore Actions read permission', text)
-        self.assertIn('run-1', text)
+        self.assertNotIn('run-1', text)
+        self.assertEqual(ctx.post_to_slack.await_count, 1)
         self.assertNotIn('shipped', text.lower())
         self.assertNotIn('rollback succeeded', text.lower())
 
@@ -52,7 +53,7 @@ class FullSendProgressTests(unittest.TestCase):
                        {'status': 'blocked', 'reason': 'Merge succeeded; live verification unavailable.'}])
         with self.assertRaises(RuntimeError):
             asyncio.run(handler(inputs(), ctx))
-        text = ctx.post_to_slack.await_args_list[-1].args[1]
+        text = ctx.update_slack.await_args_list[-1].args[2]
         self.assertIn('Deploy', text)
         self.assertIn('CI passed', text)
         self.assertIn('Merge succeeded', text)
@@ -65,7 +66,35 @@ class FullSendProgressTests(unittest.TestCase):
         ctx = context([{'status': 'blocked', 'reason': reason}])
         with self.assertRaises(RuntimeError):
             asyncio.run(handler(inputs(), ctx))
-        text = ctx.post_to_slack.await_args_list[-1].args[1]
+        text = ctx.update_slack.await_args_list[-1].args[2]
         self.assertNotIn(secret, text)
         self.assertNotIn('<!channel>', text)
         self.assertLess(len(text), 1500)
+
+    def test_service_html_is_not_copied_into_a_workflow_failure_card(self):
+        ctx = context([{'status': 'blocked', 'reason': 'HTTP 500 <!doctype html><svg>service debug dump</svg>'}])
+        with self.assertRaisesRegex(RuntimeError, 'HTTP 500'):
+            asyncio.run(handler(inputs(), ctx))
+        text = ctx.update_slack.await_args_list[-1].args[2]
+        self.assertNotIn('svg', text)
+        self.assertNotIn('service debug dump', text)
+        self.assertNotIn('run-1', text)
+        self.assertEqual(ctx.post_to_slack.await_count, 1)
+
+    def test_failure_to_update_status_still_posts_one_readable_failure(self):
+        ctx = context([{'status': 'blocked', 'reason': 'CI cannot read required jobs.'}])
+        ctx.update_slack.side_effect = RuntimeError('Slack edit unavailable')
+        with self.assertRaises(RuntimeError):
+            asyncio.run(handler(inputs(), ctx))
+        self.assertEqual(ctx.post_to_slack.await_count, 2)
+        self.assertIn('CI cannot read', ctx.post_to_slack.await_args_list[-1].args[1])
+
+    def test_technical_next_steps_are_kept_out_of_the_primary_card(self):
+        ctx = context([{'status': 'blocked', 'reason': 'A service denied access.',
+                       'next_step': 'Give role_Internal to prn_Internal for run 00000000-0000-0000-0000-000000000001.'}])
+        with self.assertRaises(RuntimeError):
+            asyncio.run(handler(inputs(), ctx))
+        text = ctx.update_slack.await_args_list[-1].args[2]
+        self.assertNotIn('prn_Internal', text)
+        self.assertNotIn('00000000-', text)
+        self.assertIn('Ask me', text)

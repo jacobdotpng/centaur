@@ -165,6 +165,17 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     && codex --version | grep -F "${CODEX_VERSION}" \
     && pi --version | grep -Fx "${PI_CODING_AGENT_VERSION}" \
     && pnpm --version | grep -F "${PNPM_VERSION}"
+
+# ── Mermaid CLI (diagrams → PNG for the `mermaid` tool) ─────────────────────
+# Puppeteer's own browser download is skipped: the `mermaid` tool points mmdc
+# at the Chrome for Testing build baked below, so there is no second browser.
+ARG MERMAID_CLI_VERSION=12.2.0
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+    PUPPETEER_SKIP_DOWNLOAD=1 npm install -g --prefer-online \
+      "@mermaid-js/mermaid-cli@${MERMAID_CLI_VERSION}" \
+    && find /usr/lib/node_modules/@mermaid-js -type f -name '*.map' -delete \
+    && mmdc --version | grep -Fx "${MERMAID_CLI_VERSION}" \
+    && test ! -e /root/.cache/puppeteer
 # Keep every pi run, the harness's and the agent's own, from phoning home.
 ENV PI_TELEMETRY=0 \
     PI_SKIP_VERSION_CHECK=1
@@ -290,6 +301,21 @@ RUN if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
       mv /tmp/chrome-linux64 "$dest"; \
       rm /tmp/chrome-linux64.zip; \
       "$dest/chrome" --version | grep -F "${CHROME_FOR_TESTING_VERSION}"; \
+    fi
+# The `mermaid` tool renders with this Chrome (it also falls back to the newest
+# ~/.agent-browser/browsers/chrome-*/chrome). Smoke-test a real render as the
+# non-root agent user so a broken mmdc/Chrome pairing fails the image build.
+ENV MERMAID_CHROME_PATH=/home/agent/.agent-browser/browsers/chrome-${CHROME_FOR_TESTING_VERSION}/chrome
+RUN if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
+      set -eux; \
+      smoke="$(mktemp -d)"; \
+      printf '{"executablePath":"%s","headless":true,"args":["--no-sandbox","--disable-dev-shm-usage","--disable-gpu"]}' \
+        "$MERMAID_CHROME_PATH" > "$smoke/puppeteer.json"; \
+      printf 'flowchart LR\n  A --> B\n' > "$smoke/smoke.mmd"; \
+      PUPPETEER_SKIP_DOWNLOAD=1 mmdc --quiet -i "$smoke/smoke.mmd" -o "$smoke/smoke.png" \
+        -p "$smoke/puppeteer.json"; \
+      head -c 8 "$smoke/smoke.png" | od -An -tx1 | grep -q '89 50 4e 47'; \
+      rm -rf "$smoke"; \
     fi
 
 # Keep Playwright in uv's image-backed cache so isolated tool environments do

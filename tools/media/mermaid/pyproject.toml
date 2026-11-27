@@ -1,0 +1,23 @@
+[project]
+name = "mermaid"
+description = "Render Mermaid diagrams to PNG and post them to the current Slack thread"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "typer>=0.12.0",
+]
+
+[project.scripts]
+mermaid = "centaur_tool_mermaid.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["centaur_tool_mermaid"]
+
+[tool.centaur]
+module = "centaur_tool_mermaid/client.py"
+hosts = []
+secrets = []

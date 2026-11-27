@@ -98,5 +98,19 @@ class SystemPromptTest(unittest.TestCase):
         self.assertIn("keep time windows that affect the work", prompt)
         self.assertIn("Do not repeat a successful mutation", prompt)
 
+    def test_architecture_requests_get_an_automatic_mermaid_diagram(self) -> None:
+        prompt = SYSTEM_PROMPT.read_text()
+
+        self.assertIn("[Architecture diagrams]", prompt)
+        self.assertIn("plan, design, or propose a system or architecture", prompt)
+        self.assertIn("include a Mermaid diagram automatically, without being asked", prompt)
+        self.assertIn('`mermaid post diagram.mmd --comment "<one-line caption>"`', prompt)
+        self.assertIn("uploads it to the current Slack thread through `slack upload`", prompt)
+        self.assertIn("put the Mermaid source in a ```mermaid code block in your reply", prompt)
+        self.assertIn("say the diagram could not be rendered", prompt)
+        self.assertIn('unless `mermaid post` printed `"ok": true`', prompt)
+        # The diagram upload must not be read as a forbidden `slack` reply post.
+        self.assertIn("the one sanctioned upload alongside your normal reply", prompt)
+
 if __name__ == "__main__":
     unittest.main()
